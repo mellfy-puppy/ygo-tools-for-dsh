@@ -1,0 +1,42 @@
+FROM node:lts-trixie-slim as base
+LABEL Author="Nanahira <nanahira@momobako.com>"
+
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends curl ca-certificates gnupg; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
+      | gpg --dearmor -o /etc/apt/keyrings/google-linux.gpg; \
+    chmod a+r /etc/apt/keyrings/google-linux.gpg; \
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google-linux.gpg] https://dl.google.com/linux/chrome/deb stable main" \
+      > /etc/apt/sources.list.d/google-chrome.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      python3 build-essential git \
+      google-chrome-stable \
+      libnss3 libfreetype6-dev libharfbuzz-bin libharfbuzz-dev \
+      fonts-freefont-otf fonts-freefont-ttf \
+      fonts-noto-cjk fonts-noto-cjk-extra \
+      fonts-wqy-microhei fonts-wqy-zenhei \
+      xvfb; \
+    apt-get purge -y --auto-remove gnupg; \
+    apt-get clean; \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /var/log/*
+
+WORKDIR /usr/src/app
+COPY ./package*.json ./
+
+FROM base as builder
+RUN npm ci && npm cache clean --force
+COPY . ./
+RUN npm run build
+
+FROM base
+ENV NODE_ENV production
+RUN npm ci && npm cache clean --force
+COPY --from=builder /usr/src/app/dist ./dist
+
+CMD [ "npm", "start" ]

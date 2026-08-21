@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "koishipro-core.js": "1.5.2",
+    "sql.js": "1.14.1",
+    "ygopro-msg-encode": "1.3.0",
+    "ygopro-yrp-encode": "1.0.8"
+  }
+}

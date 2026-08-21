@@ -1,0 +1,36 @@
+node_modules/
+!skill/vendor/node_modules/
+!skill/vendor/node_modules/**
+/dist/
+*.tgz
+output/
+.cache/
+tmp/
+sessions/
+runtime/.cache/
+*.log
+.DS_Store
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.npmrc
+.pypirc
+credentials*
+secrets*
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+*.keystore
+*.jks
+id_rsa*
+id_ed25519*
+
+# Editor and operating-system files
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini

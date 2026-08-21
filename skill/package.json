@@ -1,0 +1,46 @@
+{
+  "name": "ygoagentskill",
+  "version": "1.0.0",
+  "private": true,
+  "license": "0BSD",
+  "type": "module",
+  "description": "DeepSeek Harness-native Yu-Gi-Oh model-tool source with persistent sessions and verified engine execution.",
+  "files": [
+    "LICENSE",
+    "SKILL.md",
+    "backend",
+    "references",
+    "resources",
+    "runtime",
+    "scripts",
+    "tests",
+    "vendor"
+  ],
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "scripts": {
+    "validate": "node scripts/validate-skill.mjs",
+    "smoke": "node tests/smoke.mjs",
+    "test:host": "node tests/tool-host.mjs && node tests/persistent-engine-host.mjs",
+    "test:discovery": "node --test tests/ygopro2-discovery.mjs",
+    "test:ygopro2-live": "node --test tests/ygopro2-live-bridge.mjs",
+    "test:ygopro2-replay": "node --test tests/ygopro2-replay-export.mjs",
+    "test:ygopro2-compat": "node --test tests/ygopro2-script-compatibility.mjs",
+    "test:large-selection": "node --test tests/large-selection-guard.mjs",
+    "test:data-update": "node tests/card-data-updater-validation.mjs",
+    "test:resource-coherence": "node tests/resource-coherence-regression.mjs",
+    "test:no-file-writes": "node tests/no-file-side-effects.mjs",
+    "test:no-scoring": "node tests/no-scoring-surface.mjs",
+    "test:prerelease": "node tests/prerelease-source-regression.mjs",
+    "test:effect-reference": "node tests/effect-reference-regression.mjs",
+    "test:focused": "node tests/tool-host.mjs && node tests/persistent-engine-host.mjs && node --test tests/ygopro2-discovery.mjs && node --test tests/ygopro2-replay-export.mjs && node --test tests/ygopro2-script-compatibility.mjs && node --test tests/large-selection-guard.mjs && node tests/focused-validation.mjs && node tests/resource-coherence-regression.mjs && node tests/no-file-side-effects.mjs && node tests/no-scoring-surface.mjs && node tests/prerelease-source-regression.mjs && node tests/effect-reference-regression.mjs",
+    "test:e2e": "node tests/end-to-end.mjs"
+  },
+  "dependencies": {
+    "koishipro-core.js": "^1.4.5",
+    "sql.js": "^1.13.0",
+    "ygopro-msg-encode": "^1.2.2",
+    "ygopro-yrp-encode": "^1.0.1"
+  }
+}

@@ -1,0 +1,34 @@
+{
+    "name": "@types/sql.js",
+    "version": "1.4.11",
+    "description": "TypeScript definitions for sql.js",
+    "homepage": "https://github.com/DefinitelyTyped/DefinitelyTyped/tree/master/types/sql.js",
+    "license": "MIT",
+    "contributors": [
+        {
+            "name": "Florian Imdahl",
+            "githubUsername": "ffflorian",
+            "url": "https://github.com/ffflorian"
+        },
+        {
+            "name": "Yehyoung Kang",
+            "githubUsername": "pastelmind",
+            "url": "https://github.com/pastelmind"
+        }
+    ],
+    "main": "",
+    "types": "index.d.ts",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/DefinitelyTyped/DefinitelyTyped.git",
+        "directory": "types/sql.js"
+    },
+    "scripts": {},
+    "dependencies": {
+        "@types/emscripten": "*",
+        "@types/node": "*"
+    },
+    "peerDependencies": {},
+    "typesPublisherContentHash": "e05a1146ddafe0b404fc8e05d4f16d91427756fcec54e182c4e18d69c436adac",
+    "typeScriptVersion": "5.3"
+}
