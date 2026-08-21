@@ -18,6 +18,23 @@
 
 YGO Tools for DSH 是一个面向 DeepSeek Harness 的原生游戏王工具插件。它把卡片数据、禁限表、卡组管理和 OCG 规则引擎接入模型，使游戏王研究从文本查询进入可验证的决斗状态。
 
+## 快速开始
+
+从 GitHub Release 安装插件：
+
+```powershell
+dsh plugin --profile web add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.2.0/ygo-tools-for-dsh-1.2.0.tgz"
+```
+
+然后在预设的 `agent.cordis.yml` 中挂载：
+
+```yaml
+- id: ygo-tools
+  name: ygo-tools-for-dsh
+```
+
+使用该预设创建新会话即可。规则引擎会在第一次调用游戏王工具时启动。
+
 ## 项目概览
 
 ```text

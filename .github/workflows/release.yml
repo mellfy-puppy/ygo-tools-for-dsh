@@ -4,6 +4,9 @@ on:
   push:
     tags: ['v*']
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -13,7 +16,9 @@ jobs:
         with:
           node-version: 22
       - name: Build tarball
-        run: npm pack --pack-destination ./dist
+        run: |
+          mkdir -p dist
+          npm pack --pack-destination ./dist
       - name: Write checksums
         run: sha256sum dist/*.tgz > dist/SHA256SUMS.txt
       - name: Upload tarball to release
