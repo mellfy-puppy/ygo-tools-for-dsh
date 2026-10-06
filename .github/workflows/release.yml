@@ -14,14 +14,19 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
+      - name: Install tested DSH runtime
+        run: npm install --no-save --ignore-scripts --no-package-lock --include=dev @deepseek-ai/dsh-tools@0.1.7-rc.2 @deepseek-ai/dsh-skill@0.1.7-rc.2 @deepseek-ai/dsh-llm@0.1.7-rc.2 @deepseek-ai/dsh-agent-preset@0.1.7-rc.2
+      - name: Verify compatibility and deck learning
+        run: npm test
       - name: Build tarball
         run: |
           mkdir -p dist
           npm pack --pack-destination ./dist
       - name: Write checksums
-        run: sha256sum dist/*.tgz > dist/SHA256SUMS.txt
+        run: cd dist && sha256sum *.tgz > SHA256SUMS.txt
       - name: Upload tarball to release
         uses: softprops/action-gh-release@v2
         with:
+          body_path: docs/release-1.3.0.md
           files: dist/*

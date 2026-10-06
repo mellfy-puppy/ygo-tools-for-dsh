@@ -32,6 +32,7 @@ export function resolveSkillConfig(env = process.env) {
     replayDir: resolve(env.YGO_REPLAY_DIR || resolve(skillRoot, 'output', 'replays')),
     routeDir: resolve(env.YGO_ROUTE_DIR || resolve(skillRoot, 'output', 'routes')),
     deckDir: resolve(env.YGO_DECK_DIR || resolve(skillRoot, 'output', 'decks')),
+    deckSkillDir: resolve(env.YGO_DECK_SKILL_DIR || resolve(skillRoot, 'output', 'deck-skills')),
     deckPath: resolve(env.YGO_DECK_PATH || resolve(resourceRoot, 'lib', 'slm.ydk')),
     idMigrationsPath: resolve(env.YGO_ID_MIGRATIONS || resolve(resourceRoot, 'lib', 'id-migrations.json')),
     engineBackend: env.YGO_ENGINE_BACKEND || 'js',

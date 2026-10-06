@@ -42,7 +42,7 @@ const comboSimulator = require(resolve(PROJECT_ROOT, 'combo-simulator.cjs'));
  * @typedef {{ phaseIndex: number, title: string, headlinerCards: string[], unitRange: [number, number], stepRange: [number, number], unitCount: number, responseCount: number, units: YrpActionUnit[], summary: string }} YrpPhaseGroup
  * @typedef {{ packetIndex: number, packetOffset: number, type: number, messageName: string, kind: string, label: string, code?: number | null, cardName?: string | null, details?: Record<string, unknown> }} YgoPro2TraceEvent
  * @typedef {{ source: 'ygopro2-client-message-stream', packetCount: number, eventCount: number, markdown: string, events: YgoPro2TraceEvent[], warnings: YrpRouteWarning[] }} YgoPro2ClientTrace
- * @typedef {{ fileName: string | null, sourcePath: string | null, container: Record<string, unknown> | null, clientTrace?: YgoPro2ClientTrace | null, replay: Record<string, unknown>, deck: { player: { counts: { main: number, extra: number, side: number }, opening: NamedCard[] }, opponent: { counts: { main: number, extra: number, side: number }, openingCount: number, hiddenInformation: true } }, summary: Record<string, unknown>, visibleSteps: YrpRouteStep[], actionUnits: YrpActionUnit[], phaseGroups: YrpPhaseGroup[], rawEvents: YrpRouteEvent[], warnings: YrpRouteWarning[], context: YrpRouteContext }} YrpRouteData
+ * @typedef {{ fileName: string | null, sourcePath: string | null, container: Record<string, unknown> | null, clientTrace?: YgoPro2ClientTrace | null, replay: Record<string, unknown>, deck: { player: PlainDeck & { sideDeckRecorded: false, counts: { main: number, extra: number, side: number }, opening: NamedCard[] }, opponent: { counts: { main: number, extra: number, side: number }, openingCount: number, hiddenInformation: true } }, summary: Record<string, unknown>, visibleSteps: YrpRouteStep[], actionUnits: YrpActionUnit[], phaseGroups: YrpPhaseGroup[], rawEvents: YrpRouteEvent[], warnings: YrpRouteWarning[], context: YrpRouteContext }} YrpRouteData
  * @typedef {{ ok: true, data: YrpRouteData } | { ok: false, error: string, code: string, sourcePath?: string | null }} YrpRouteParseResult
  * @typedef {{ label?: string, kind?: string, text?: string, response?: Uint8Array | number[], intResponse?: number }} ReplayAction
  * @typedef {{ terminal?: boolean, reason?: string | null, actions?: ReplayAction[], message?: { constructor?: { name?: string }, responsePlayer?: () => number }, responsePlayer?: number | null, lazyReplayDecision?: boolean, estimatedLegalCandidateCount?: number }} ReplayDecision
@@ -422,6 +422,10 @@ async function buildRouteDataFromReplay(replay, options) {
       replay: summarizeReplay(replay, yrpVersion),
       deck: {
         player: {
+          // Persist the complete replay player deck for exact, order-independent
+          // deck learning. Counts and the opening alone cannot identify a deck.
+          ...playerDeck,
+          sideDeckRecorded: false,
           counts: countDeck(playerDeck),
           opening: nameCards(playerOpening.opening, runner?.cardText),
         },

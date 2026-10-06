@@ -12,6 +12,7 @@ import {
 import { loadIdMigrationMap, migrateCardEntries, migrateDeckIds, resolveCurrentCardId } from './deck-migration.mjs';
 import { getToolInputSchema, TOOL_DESCRIPTIONS, validateToolInput } from './tool-schemas.mjs';
 import { buildComboAdaptationReport, parseComboArtifactInput } from './combo-artifact.mjs';
+import { learnDeckSkill, refreshActiveDeckSkills } from './deck-learning.mjs';
 import { discoverYgoPro2 } from './ygopro2-discovery.mjs';
 import {
   createYgoPro2DuelRunner,
@@ -66,6 +67,7 @@ const CORE_TOOL_NAMES = Object.freeze([
   'buildRouteContext',
   'parseComboArtifact',
   'buildComboAdaptationContext',
+  'learnDeckSkill',
 ]);
 const FILE_WRITE_TOOL_NAMES = Object.freeze(['saveReplayYrp', 'saveRouteFile']);
 const ALL_TOOL_NAMES = Object.freeze([...CORE_TOOL_NAMES, ...FILE_WRITE_TOOL_NAMES]);
@@ -136,7 +138,15 @@ export function createSourceAdapter(configInput = {}) {
         if (name === 'resetGame') {
           preparedInput = injectSessionResetDefaults(preparedContext, preparedInput);
         }
-        return await tool.execute(preparedContext, preparedInput);
+        const result = await tool.execute(preparedContext, preparedInput);
+        if (result?.ok && ['setSessionDeck', 'getSessionDeck', 'editSessionDeck', 'learnDeckSkill', 'getCurrentState', 'listActions'].includes(name)) {
+          const deckSkills = result.data?.context?.deckSkills ?? await refreshActiveDeckSkills({
+            session: preparedContext.session, deckSkillDir: config.deckSkillDir, skillRoot: config.skillRoot,
+          });
+          result.data = { ...asRecord(result.data), context: { ...asRecord(result.data?.context), deckSkills } };
+          if ('activeDeckSkills' in result.data) result.data.activeDeckSkills = summarizeDeckSkills(deckSkills.skills);
+        }
+        return result;
       } catch (error) {
         return {
           ok: false,
@@ -198,6 +208,7 @@ function normalizeConfig(configInput) {
     replayDir: resolve(merged.replayDir),
     routeDir: resolve(merged.routeDir),
     deckDir: resolve(merged.deckDir),
+    deckSkillDir: resolve(merged.deckSkillDir),
     deckPath: resolve(merged.deckPath),
     idMigrationsPath: resolve(merged.idMigrationsPath),
     allowNetworkUpdate: Boolean(merged.allowNetworkUpdate),
@@ -298,6 +309,8 @@ async function executeCoreTool(name, config, moduleCache, context, input) {
       return executeParseComboArtifact(context, input);
     case 'buildComboAdaptationContext':
       return executeBuildComboAdaptationContext(context, input, config, moduleCache);
+    case 'learnDeckSkill':
+      return executeLearnDeckSkill(context, input, config);
     default:
       return { ok: false, code: 'UNKNOWN_TOOL', error: `Unknown YGO tool: ${name}` };
   }
@@ -806,6 +819,12 @@ async function setSessionDeck(context, input, config, moduleCache) {
       currentDeckMigration: migrated.report,
       currentDeckMigratedAt: migrated.report.applied ? new Date().toISOString() : null,
     });
+    const deckSkills = await refreshActiveDeckSkills({
+      session,
+      deckSkillDir: config.deckSkillDir,
+      skillRoot: config.skillRoot,
+    });
+    const activeDeckSkills = deckSkills.skills;
     return {
       ok: true,
       data: {
@@ -814,6 +833,8 @@ async function setSessionDeck(context, input, config, moduleCache) {
         message: `Deck loaded into session: ${deckName}`,
         migration: migrated.report,
         originalDeck: migrated.report.applied ? migrated.originalDeck : null,
+        activeDeckSkills: summarizeDeckSkills(activeDeckSkills),
+        context: { deckSkills },
         ...analyzeDeck(migrated.deck, cardsDb, []),
       },
     };
@@ -837,6 +858,7 @@ function getSessionDeck(context) {
       migration: asRecord(session.metadata.currentDeckMigration),
       originalDeck: session.metadata.currentDeckOriginal ?? null,
       originalYdk: readString(session.metadata.currentDeckOriginalYdk),
+      activeDeckSkills: summarizeDeckSkills(session.metadata.activeDeckSkills),
     },
   };
 }
@@ -912,7 +934,24 @@ async function editSessionDeck(context, input, config, moduleCache) {
     currentDeckUpdatedAt: new Date().toISOString(),
     ...(editMigration.applied ? { currentDeckMigration: mergeMigrationReports(session.metadata.currentDeckMigration, editMigration) } : {}),
   });
-  return { ok: true, data: { action: operation, deck: next, counts: countDeck(next), ydk: serializeYdkText(next), migration: editMigration } };
+  const deckSkills = await refreshActiveDeckSkills({
+    session,
+    deckSkillDir: config.deckSkillDir,
+    skillRoot: config.skillRoot,
+  });
+  const activeDeckSkills = deckSkills.skills;
+  return {
+    ok: true,
+    data: {
+      action: operation,
+      deck: next,
+      counts: countDeck(next),
+      ydk: serializeYdkText(next),
+      migration: editMigration,
+      activeDeckSkills: summarizeDeckSkills(activeDeckSkills),
+      context: { deckSkills },
+    },
+  };
 }
 
 async function exportSessionDeck(context, input, config) {
@@ -1027,6 +1066,15 @@ async function executeBuildComboAdaptationContext(context, input, config, module
   } finally {
     cardsDb.close?.();
   }
+}
+
+async function executeLearnDeckSkill(context, input, config) {
+  const session = resolveSession(context);
+  return learnDeckSkill(input, {
+    session,
+    skillRoot: config.skillRoot,
+    deckSkillDir: config.deckSkillDir,
+  });
 }
 
 function isRouteLikeRecord(record) {
@@ -1388,6 +1436,20 @@ function readSessionDeck(session) {
   const deck = session?.metadata?.currentDeck;
   if (!deck || !Array.isArray(deck.main) || !Array.isArray(deck.extra) || !Array.isArray(deck.side)) return null;
   return cloneDeck(deck);
+}
+
+function summarizeDeckSkills(value) {
+  return Array.isArray(value)
+    ? value.map((skill) => ({
+      name: readString(asRecord(skill).name),
+      description: readString(asRecord(skill).description),
+      deckFingerprint: readString(asRecord(skill).deckFingerprint),
+      deckName: readString(asRecord(skill).deckName),
+      path: readString(asRecord(skill).path),
+      sourceReplay: readString(asRecord(skill).sourceReplay),
+      generatedAt: readString(asRecord(skill).generatedAt),
+    }))
+    : [];
 }
 
 function readFixedOpeningCards(session) {

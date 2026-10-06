@@ -196,6 +196,39 @@ export function createModelToolHost(config = {}, hostOptions = {}) {
       }
       case 'analyzeCombo':
         return executeBackend(action === 'parse' ? 'parseComboArtifact' : 'buildComboAdaptationContext');
+      case 'learnDeck': {
+        if (action === 'learn') {
+          const parsed = input.file || input.yrpBase64
+            ? await executeBackend('parseYrpRoute', {
+              ...(input.file ? { file: input.file } : {}),
+              ...(input.yrpBase64 ? { yrpBase64: input.yrpBase64 } : {}),
+              ...(input.fileName ? { fileName: input.fileName } : {}),
+            })
+            : { ok: true, data: session.metadata.lastParsedYrpRoute };
+          if (parsed?.ok === false) return parsed;
+          if (!parsed.data) return { ok: false, code: 'DECK_LEARNING_REPLAY_REQUIRED', error: 'Provide file/yrpBase64 or first call analyzeReplay in this session.' };
+          rememberParsedReplay(session, parsed.data);
+          return executeBackend('learnDeckSkill', {
+            action: 'learn',
+            route: parsed.data,
+            ...(input.deck ? { deck: input.deck } : {}),
+            ...(input.skillName ? { skillName: input.skillName } : {}),
+            ...(input.deckName ? { deckName: input.deckName } : {}),
+            ...(input.description ? { description: input.description } : {}),
+            ...(input.strategyNotes !== undefined ? { strategyNotes: input.strategyNotes } : {}),
+            ...(input.overwrite !== undefined ? { overwrite: input.overwrite } : {}),
+            ...(input.maxSteps !== undefined ? { maxSteps: input.maxSteps } : {}),
+            source: input.fileName ?? input.file ?? parsed.data.source?.fileName ?? parsed.data.fileName ?? 'provided replay',
+          });
+        }
+        return executeBackend('learnDeckSkill', {
+          action,
+          ...(input.deck ? { deck: input.deck } : {}),
+          ...(input.skillName ? { skillName: input.skillName } : {}),
+          ...(input.confirm !== undefined ? { confirm: input.confirm } : {}),
+          ...(input.matchingOnly !== undefined ? { matchingOnly: input.matchingOnly } : {}),
+        });
+      }
       case 'saveArtifact':
         return executeBackend(action === 'replay' ? 'saveReplayYrp' : 'saveRouteFile');
       default:

@@ -1,6 +1,6 @@
 {
   "name": "ygo-tools-for-dsh",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Native DeepSeek Harness tools for Yu-Gi-Oh card research, deck analysis, verified duel simulation, replay analysis, and YGOPro2 bridging.",
   "private": true,
   "license": "0BSD",
@@ -8,17 +8,20 @@
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./presets/ygo.patch.yml": "./presets/ygo.patch.yml"
   },
   "files": [
     "lib",
     "skill",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "presets",
+    "docs"
   ],
   "engines": {
-    "node": ">=20.11.0"
+    "node": ">=22.0.0"
   },
   "keywords": [
     "yugioh",
@@ -30,17 +33,23 @@
     "ocgcore"
   ],
   "peerDependencies": {
-    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.6 <0.2.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.7-rc.2 <0.2.0",
+    "@deepseek-ai/dsh-skill": ">=0.1.7-rc.2 <0.2.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.7-rc.2 <0.2.0",
+    "@deepseek-ai/dsh-agent-preset": ">=0.1.7-rc.2 <0.2.0",
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "dsh": {
-    "plugin": {
-      "id": "ygo-tools",
-      "kind": "tool-set",
-      "row": {
-        "id": "ygo-tools",
-        "name": "ygo-tools-for-dsh"
-      }
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./presets/ygo.patch.yml"
     }
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-app-boot": "0.1.7-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.1.7-rc.2"
   }
 }

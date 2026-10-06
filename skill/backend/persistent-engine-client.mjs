@@ -16,22 +16,30 @@ export function createPersistentEngineClient(options = {}) {
   const startupTimeoutMs = normalizeTimeout(options.startupTimeoutMs, 15000);
   let starting = null;
 
-  async function health() {
+  async function health(requestOptions = {}) {
     try {
-      const result = await requestJson(`${baseUrl}/health`, { timeoutMs: 1500 });
+      const result = await requestJson(`${baseUrl}/health`, {
+        signal: requestOptions.signal,
+        timeoutMs: normalizeTimeout(requestOptions.timeoutMs, 1500),
+      });
       if (result.protocol !== ENGINE_HOST_PROTOCOL) {
         return { ok: false, code: 'ENGINE_HOST_PROTOCOL_MISMATCH', error: `Port ${port} is occupied by an incompatible service.` };
       }
       return result;
     } catch (error) {
+      // A caller cancellation is not evidence that the host is unavailable.
+      requestOptions.signal?.throwIfAborted();
       return { ok: false, code: 'ENGINE_HOST_UNAVAILABLE', error: error instanceof Error ? error.message : String(error) };
     }
   }
 
-  async function ensureStarted() {
-    const current = await health();
+  async function ensureStarted(requestOptions = {}) {
+    const { signal } = requestOptions;
+    signal?.throwIfAborted();
+    const current = await health({ signal });
     if (current.ok) return current;
     if (current.code === 'ENGINE_HOST_PROTOCOL_MISMATCH' || !autoStart) throw new Error(current.error);
+    signal?.throwIfAborted();
     if (!starting) {
       starting = startDetachedHost({
         hostname,
@@ -39,30 +47,39 @@ export function createPersistentEngineClient(options = {}) {
         env: { ...process.env, ...asRecord(options.serverEnv) },
       }).finally(() => { starting = null; });
     }
-    await starting;
+    // The detached host is shared by other sessions. Cancelling this wait must
+    // never kill it or submit a shutdown request.
+    await waitWithSignal(starting, signal);
     const deadline = Date.now() + startupTimeoutMs;
     let last;
     while (Date.now() < deadline) {
-      last = await health();
+      last = await health({ signal, timeoutMs: Math.min(1500, deadline - Date.now()) });
       if (last.ok) return last;
       if (last.code === 'ENGINE_HOST_PROTOCOL_MISMATCH') throw new Error(last.error);
-      await delay(75);
+      await delay(Math.min(75, Math.max(0, deadline - Date.now())), signal);
     }
     throw new Error(`Persistent engine host did not become ready within ${startupTimeoutMs} ms: ${last?.error ?? 'unknown error'}`);
   }
 
   async function execute(call, executeOptions = {}) {
-    await ensureStarted();
-    return requestJson(`${baseUrl}/execute`, {
-      method: 'POST',
-      body: { call, sessionId: executeOptions.sessionId ?? 'default' },
-      timeoutMs: normalizeTimeout(executeOptions.timeoutMs, 120000),
-    });
+    const timeoutMs = normalizeTimeout(executeOptions.timeoutMs, 120000);
+    const scope = abortScope(executeOptions.signal, timeoutMs);
+    try {
+      await ensureStarted({ signal: scope.signal });
+      return await requestJson(`${baseUrl}/execute`, {
+        method: 'POST',
+        body: { call, sessionId: executeOptions.sessionId ?? 'default' },
+        signal: scope.signal,
+        timeoutMs,
+      });
+    } finally {
+      scope.dispose();
+    }
   }
 
-  async function listTools() {
-    await ensureStarted();
-    const result = await requestJson(`${baseUrl}/tools`, { timeoutMs: 5000 });
+  async function listTools(requestOptions = {}) {
+    await ensureStarted(requestOptions);
+    const result = await requestJson(`${baseUrl}/tools`, { timeoutMs: 5000, signal: requestOptions.signal });
     return result.tools;
   }
 
@@ -78,11 +95,17 @@ function startDetachedHost(options) {
         stdio: 'ignore',
         windowsHide: true,
       });
-      child.once('error', reject);
-      child.once('spawn', () => {
+      const onError = (error) => {
+        child.off('spawn', onSpawn);
+        reject(error);
+      };
+      const onSpawn = () => {
+        child.off('error', onError);
         child.unref();
         resolve();
-      });
+      };
+      child.once('error', onError);
+      child.once('spawn', onSpawn);
     } catch (error) {
       reject(error);
     }
@@ -90,21 +113,26 @@ function startDetachedHost(options) {
 }
 
 async function requestJson(url, options = {}) {
-  const response = await fetch(url, {
-    method: options.method ?? 'GET',
-    headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-    signal: AbortSignal.timeout(normalizeTimeout(options.timeoutMs, 5000)),
-  });
-  const text = await response.text();
-  let value;
+  const scope = abortScope(options.signal, normalizeTimeout(options.timeoutMs, 5000));
   try {
-    value = text ? JSON.parse(text) : {};
-  } catch {
-    throw new Error(`Persistent engine host returned invalid JSON with HTTP ${response.status}.`);
+    const response = await fetch(url, {
+      method: options.method ?? 'GET',
+      headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: scope.signal,
+    });
+    const text = await response.text();
+    let value;
+    try {
+      value = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error(`Persistent engine host returned invalid JSON with HTTP ${response.status}.`);
+    }
+    if (!response.ok) throw new Error(value.error ?? `Persistent engine host returned HTTP ${response.status}.`);
+    return value;
+  } finally {
+    scope.dispose();
   }
-  if (!response.ok) throw new Error(value.error ?? `Persistent engine host returned HTTP ${response.status}.`);
-  return value;
 }
 
 function normalizePort(value) {
@@ -115,11 +143,57 @@ function normalizePort(value) {
 
 function normalizeTimeout(value, fallback) {
   const timeout = Number(value);
-  return Number.isFinite(timeout) && timeout > 0 ? Math.trunc(timeout) : fallback;
+  return Number.isFinite(timeout) && timeout > 0 ? Math.max(1, Math.trunc(timeout)) : fallback;
 }
 
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function abortScope(source, timeoutMs) {
+  source?.throwIfAborted();
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(source.reason);
+  source?.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => {
+    controller.abort(new DOMException(`Persistent engine request timed out after ${timeoutMs} ms.`, 'TimeoutError'));
+  }, timeoutMs);
+  timer.unref?.();
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timer);
+      source?.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
+function waitWithSignal(promise, signal) {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort);
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => { signal.removeEventListener('abort', onAbort); resolve(value); },
+      (error) => { signal.removeEventListener('abort', onAbort); reject(error); },
+    );
+  });
+}
+
+function delay(ms, signal) {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function readString(value) {
