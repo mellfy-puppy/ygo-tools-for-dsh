@@ -32,7 +32,11 @@ export const TOOL_DESCRIPTIONS = Object.freeze({
   inspectCardDataSources: 'Inspect installed formal and prerelease databases, scripts, and banlists without downloading.',
   discoverYgoPro2: 'Discover local YGOPro2 installations, WindBot profiles, and verified bridge launch components without starting a process or claiming a live connection.',
   getYgoPro2BridgeStatus: 'Inspect whether this session is connected to a real AI.Server duel with a WindBot opponent.',
-  refreshCardDataSources: 'Refresh official card data only when the user explicitly authorizes a network update.',
+  hostYgoPro2Match: 'Open a local YGOPro2 room on IP:port where a human client joins and plays against the model.',
+  waitYgoPro2Event: 'Wait in a hosted match until the model must decide, the opponent chats, the duel ends, or waitMs elapses.',
+  sendYgoPro2Chat: 'Send an in-game chat message from the model to the hosted YGOPro2 room.',
+  closeYgoPro2Match: 'Close the hosted YGOPro2 room and stop its AI.Server and WindBot processes.',
+  refreshCardDataSources: 'Fetch official online indexes and add only locally absent card records, scripts and data; never download complete databases or packages.',
   getBanlistContext: 'Return parsed banlist context and optionally resolve one card status.',
   setSessionDeck: 'Load YDK text or a structured deck into the current in-memory session.',
   getSessionDeck: 'Return the complete deck currently loaded in the in-memory session.',
@@ -103,11 +107,41 @@ export const TOOL_INPUT_SCHEMAS = Object.freeze({
     additionalProperties: false,
   },
   getYgoPro2BridgeStatus: emptyObject,
+  hostYgoPro2Match: {
+    type: 'object',
+    properties: {
+      port: { type: 'integer', minimum: 1, maximum: 65535, default: 7911, description: 'Port the human YGOPro2 client connects to.' },
+      bindAddress: { type: 'string', enum: ['127.0.0.1', '0.0.0.0'], default: '127.0.0.1', description: 'Use 0.0.0.0 only when the user wants other LAN machines to join.' },
+      botName: { type: 'string', minLength: 1, maxLength: 20 },
+      modelTurnOrder: { type: 'string', enum: ['first', 'second'], description: 'Choice the model makes if it wins rock-paper-scissors; omit to let WindBot choose.' },
+      deck,
+      launchClient: { type: 'boolean', default: true, description: 'Open the local YGOPro2 client and join the room automatically.' },
+      ygoPro2Root: { type: 'string', minLength: 1 },
+      externalPolicyRoot: { type: 'string', minLength: 1 },
+      startupTimeoutMs: { type: 'integer', minimum: 1000, maximum: 120000 },
+    },
+    additionalProperties: false,
+  },
+  waitYgoPro2Event: {
+    type: 'object',
+    properties: {
+      waitMs: { type: 'integer', minimum: 1000, maximum: 280000, default: 120000 },
+      graveyardLimit: { type: 'integer', minimum: 1 },
+    },
+    additionalProperties: false,
+  },
+  sendYgoPro2Chat: {
+    type: 'object',
+    properties: { text: { type: 'string', minLength: 1, maxLength: 2000 } },
+    required: ['text'],
+    additionalProperties: false,
+  },
+  closeYgoPro2Match: emptyObject,
   refreshCardDataSources: {
     type: 'object',
     properties: {
       allowNetworkUpdate: { type: 'boolean', description: 'Must be true after explicit user authorization.' },
-      force: { type: 'boolean' }, progress: { type: 'boolean' },
+      force: { type: 'boolean', description: 'Compatibility field; refresh always adds missing resources only.' }, progress: { type: 'boolean' },
       timeoutMs: { type: 'integer', minimum: 1000, maximum: 600000 },
       retryCount: { type: 'integer', minimum: 0, maximum: 5 },
     },
@@ -236,6 +270,7 @@ export const TOOL_INPUT_SCHEMAS = Object.freeze({
       },
       graveyardLimit: { type: 'integer', minimum: 1 },
       includeDescriptions: { type: 'boolean', default: false },
+      waitMs: { type: 'integer', minimum: 1000, maximum: 280000, description: 'Hosted matches only: how long to wait for the next event after acting.' },
     },
     anyOf: [{ required: ['actionLabel'] }, { required: ['actionIndex'] }, { required: ['selectionIndexes'] }],
     additionalProperties: false,
@@ -417,8 +452,8 @@ const mergeProperties = (...names) => Object.assign(
 
 export const PUBLIC_TOOL_DESCRIPTIONS = Object.freeze({
   queryCards: 'Look up one verified card or search verified card names, effect text, and card types.',
-  manageCardDataSources: 'Inspect installed card data or perform an explicitly authorized official data refresh.',
-  manageYgoPro2: 'Discover compatible local YGOPro2 components or inspect the current real AI.Server duel bridge.',
+  manageCardDataSources: 'Inspect installed card data or fetch only missing official card records, scripts and data from the network.',
+  manageYgoPro2: 'Discover local YGOPro2 components, inspect the bridge, or host a room where a human YGOPro2 client joins by IP:port and plays the model (host, wait, chat, close).',
   getBanlistContext: TOOL_DESCRIPTIONS.getBanlistContext,
   manageSessionDeck: 'Load, inspect, query, edit, or export the deck bound to the current engine session.',
   resetGame: 'Create or reset the live duel runner, optionally setting or clearing the persistent fixed opening first.',
@@ -455,8 +490,11 @@ export const PUBLIC_TOOL_INPUT_SCHEMAS = Object.freeze({
   manageYgoPro2: {
     type: 'object',
     properties: {
-      action: actionProperty(['discover', 'status'], 'Discover installations or inspect the active duel bridge.'),
-      ...mergeProperties('discoverYgoPro2'),
+      action: actionProperty(
+        ['discover', 'status', 'host', 'wait', 'chat', 'close'],
+        'discover/status inspect; host opens a room; wait blocks for the next decision, chat, or end; chat sends text; close ends the room.',
+      ),
+      ...mergeProperties('discoverYgoPro2', 'hostYgoPro2Match', 'waitYgoPro2Event', 'sendYgoPro2Chat'),
     },
     required: ['action'],
     additionalProperties: false,

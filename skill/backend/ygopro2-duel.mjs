@@ -1,14 +1,17 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import net from 'node:net';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
+import { fileURLToPath } from 'node:url';
 import { serializeYdkText } from './deck-core.mjs';
 
 const require = createRequire(import.meta.url);
+const BUNDLED_SERVER_EXECUTABLE = fileURLToPath(new URL('../resources/ygopro2-bridge/server/AI.Server.exe', import.meta.url));
+const BUNDLED_CLIENT_EXECUTABLE = fileURLToPath(new URL('../resources/ygopro2-client/YGOPro2.exe', import.meta.url));
 const { requireSkillDependency } = require('../runtime/src/vendor-require.cjs');
 const ygopro = requireSkillDependency('ygopro-msg-encode');
 const JSZip = requireSkillDependency('jszip');
@@ -17,6 +20,14 @@ const DEFAULT_DECISION_TIMEOUT_MS = 120000;
 const MAX_LOG_LENGTH = 20000;
 const CTOS_TP_RESULT = 0x04;
 const STOC_REPLAY = 0x17;
+const STOC_DUEL_START = 0x15;
+const DEFAULT_HOST_PORT = 7911;
+const DEFAULT_HOST_WAIT_MS = 120000;
+const MAX_HOST_WAIT_MS = 280000;
+const MAX_CHAT_LOG = 200;
+const MAX_AUTO_RESOLVED_LOG = 30;
+const MAX_CONSECUTIVE_AUTO_RESOLVED = 200;
+const CHAT_CHUNK_LENGTH = 120;
 
 export async function createYgoPro2DuelRunner(options) {
   const runner = new YgoPro2DuelRunner(options);
@@ -33,13 +44,29 @@ export function isYgoPro2DuelRunner(value) {
   return Boolean(value?.duelBackend === 'ygopro2-ai-server' && value?.externalDuel === true);
 }
 
+function autoResolvedField(entries) {
+  return entries.length ? { autoResolved: entries } : {};
+}
+
 export async function executeYgoPro2Action(runner, input = {}, formatCurrentState) {
   if (!isYgoPro2DuelRunner(runner)) {
     return { ok: false, code: 'YGOPRO2_DUEL_NOT_RUNNING', error: 'No YGOPro2 AI.Server duel is running in this session.' };
   }
+  if (runner.hostMode && !runner.decisionReady && !runner.currentDecision?.terminal) {
+    return { ok: false, code: 'YGOPRO2_NO_PENDING_DECISION', error: 'The model has no pending decision; call manageYgoPro2 action:"wait" until event is "decision".' };
+  }
   const prepared = prepareSelectedAction(runner.currentDecision, input);
   if (!prepared.ok) return prepared;
   const historyBefore = runner.actionHistory.length;
+  if (runner.hostMode) {
+    try {
+      await runner.submitResponse(prepared.response, prepared.action);
+    } catch (error) {
+      return { ok: false, code: 'YGOPRO2_ACTION_FAILED', error: error instanceof Error ? error.message : String(error) };
+    }
+    const waited = await waitForYgoPro2HostEvent(runner, { waitMs: input.waitMs }, formatCurrentState, input.graveyardLimit);
+    return { ...waited, data: { executedAction: summarizeAction(prepared.action, prepared.index), ...waited.data } };
+  }
   try {
     await runner.submitResponse(prepared.response, prepared.action);
   } catch (error) {
@@ -58,6 +85,7 @@ export async function executeYgoPro2Action(runner, input = {}, formatCurrentStat
     ok: true,
     data: {
       executedAction: summarizeAction(prepared.action, prepared.index),
+      ...autoResolvedField(runner.takeAutoResolved()),
       nextDecision: summarizeDecision(runner.currentDecision),
       state,
       historyLength: { before: historyBefore, after: runner.actionHistory.length },
@@ -67,6 +95,48 @@ export async function executeYgoPro2Action(runner, input = {}, formatCurrentStat
       bridge: runner.getBridgeStatus(),
     },
   };
+}
+
+// Blocks until the model must decide, the opponent chats, the duel ends, or
+// waitMs elapses. A timeout is a normal result: call wait again.
+export async function waitForYgoPro2HostEvent(runner, input = {}, formatCurrentState, graveyardLimit) {
+  if (!isYgoPro2DuelRunner(runner) || !runner.hostMode) {
+    return { ok: false, code: 'YGOPRO2_HOST_NOT_RUNNING', error: 'No YGOPro2 host match is running in this session; call manageYgoPro2 action:"host".' };
+  }
+  const waitMs = Math.min(MAX_HOST_WAIT_MS, normalizeTimeout(input.waitMs, DEFAULT_HOST_WAIT_MS));
+  const result = await runner.waitForHostEvent(waitMs);
+  const includeState = result.event === 'decision' || result.event === 'terminal';
+  return {
+    ok: true,
+    data: {
+      ...result,
+      nextDecision: result.decisionPending ? summarizeDecision(runner.currentDecision) : null,
+      state: includeState
+        ? (typeof formatCurrentState === 'function'
+          ? formatCurrentState(runner.captureSnapshot(), { runner, graveyardLimit })
+          : runner.captureSnapshot())
+        : null,
+      room: runner.getRoomInfo(),
+      hint: result.event === 'timeout'
+        ? 'Nothing needed from the model yet (the opponent is joining or thinking). Call manageYgoPro2 action:"wait" again.'
+        : result.event === 'chat'
+          ? 'Reply with manageYgoPro2 action:"chat" if appropriate, then wait again or act on a pending decision.'
+          : undefined,
+    },
+  };
+}
+
+export function sendYgoPro2Chat(runner, input = {}) {
+  if (!isYgoPro2DuelRunner(runner) || !runner.hostMode) {
+    return { ok: false, code: 'YGOPRO2_HOST_NOT_RUNNING', error: 'No YGOPro2 host match is running in this session.' };
+  }
+  const text = readString(input.text);
+  if (!text) return { ok: false, code: 'CHAT_TEXT_REQUIRED', error: 'chat requires non-empty text.' };
+  try {
+    return { ok: true, data: { sent: runner.sendChat(text) } };
+  } catch (error) {
+    return { ok: false, code: 'YGOPRO2_CHAT_FAILED', error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 export function getYgoPro2BridgeStatus(context) {
@@ -126,10 +196,31 @@ class YgoPro2DuelRunner {
     this.replayBytes = null;
     this.surrenderRequested = false;
     this.surrenderedAt = null;
+    // Host mode: a human YGOPro2 client joins by IP:port and plays against the model.
+    this.hostMode = options.mode === 'host';
+    this.hostPort = Number.isSafeInteger(Number(options.hostPort)) ? Number(options.hostPort) : DEFAULT_HOST_PORT;
+    this.bindAddress = readString(options.bindAddress) ?? '127.0.0.1';
+    this.botName = (readString(options.botName) ?? 'DSH-AI').slice(0, 20);
+    this.publicServer = null;
+    this.humanSockets = new Set();
+    this.humanConnectedAt = null;
+    this.decisionReady = false;
+    this.chatInbox = [];
+    this.chatLog = [];
+    this.hostError = null;
+    this.hostWaiters = new Set();
+    this.autoResolveForced = options.autoResolveForced !== false;
+    this.autoResolved = [];
+    this.autoResolvedTotal = 0;
+    this.consecutiveAutoResolved = 0;
+    this.cardData = options.cardData ?? null;
+    this.duelStartedAt = null;
+    this.clientLaunch = null;
   }
 
   async start() {
     validateLaunchOptions(this);
+    if (this.hostMode) return this.startHost();
     this.tempDirectory = await mkdtemp(join(tmpdir(), 'ygoagentskill-ygopro2-'));
     const playerDeckFile = join(this.tempDirectory, 'player.ydk');
     await writeFile(playerDeckFile, serializeYdkText(this.playerDeck), 'utf8');
@@ -187,6 +278,157 @@ class YgoPro2DuelRunner {
     }
     this.startedAt = new Date().toISOString();
     return this;
+  }
+
+  // Starts AI.Server, seats the model-controlled WindBot, and opens the public
+  // port that a human YGOPro2 client joins. Returns before the human arrives.
+  async startHost() {
+    this.tempDirectory = await mkdtemp(join(tmpdir(), 'ygoagentskill-ygopro2-host-'));
+    const playerDeckFile = join(this.tempDirectory, 'player.ydk');
+    await writeFile(playerDeckFile, serializeYdkText(this.playerDeck), 'utf8');
+    await this.startPolicyServer();
+    // Hosted rooms run the bundled AI.Server on the plugin's card data.
+    this.compatibilityRuntime = await prepareBundledServerRuntime(
+      this.cardData,
+      join(this.tempDirectory, 'ai-server-runtime'),
+    );
+    this.duelPort = await reserveLoopbackPort();
+    const server = this.spawnProcess('ai-server', this.compatibilityRuntime.serverExecutable, [
+      String(this.duelPort), '-1', '5', '0', 'F', 'F', 'F', '8000', '5', '1', '0', '0',
+    ], this.compatibilityRuntime.root);
+    await waitForListeningPort(server, this.duelPort, this.startupTimeoutMs);
+    await this.startPublicServer();
+    const args = [
+      `Name=${this.botName}`,
+      'Deck=YGOFTKExternal',
+      `DeckFile=${playerDeckFile}`,
+      'Host=127.0.0.1',
+      `Port=${this.duelPort}`,
+      'Hand=0',
+      'Chat=false',
+      `AgentPort=${this.policyPort}`,
+      `EpisodeId=${this.episodeId}`,
+      'AgentTimeoutMs=0',
+      'FullDuel=true',
+      `DbPath=${this.cardData.cardsDbPath}`,
+    ];
+    const extraDbs = this.compatibilityRuntime.cardDatabases.slice(1);
+    if (extraDbs.length > 0) args.push(`ExtraDbPaths=${extraDbs.join(';')}`);
+    if (this.playerTurnOrder) args.push(`TurnOrder=${this.playerTurnOrder}`);
+    this.spawnProcess('model-client', this.externalPolicyClient.executable, args, this.externalPolicyClient.workingDirectory);
+    const deadline = Date.now() + this.startupTimeoutMs;
+    while (!this.policySocket && !this.hostError && Date.now() < deadline) await delay(50);
+    if (this.hostError) throw new Error(this.hostError);
+    if (!this.policySocket) throw new Error(`Model WindBot did not connect within ${this.startupTimeoutMs} ms.`);
+    this.startedAt = new Date().toISOString();
+    return this;
+  }
+
+  async startPublicServer() {
+    this.publicServer = net.createServer((socket) => {
+      this.humanSockets.add(socket);
+      this.humanConnectedAt ??= new Date().toISOString();
+      socket.setNoDelay(true);
+      const upstream = net.createConnection({ host: '127.0.0.1', port: this.duelPort });
+      upstream.setNoDelay(true);
+      socket.pipe(upstream);
+      upstream.pipe(socket);
+      // Capture the server replay packet on its way to the human client.
+      let pending = Buffer.alloc(0);
+      upstream.on('data', (chunk) => {
+        pending = Buffer.concat([pending, chunk]);
+        while (pending.length >= 2) {
+          const frameLength = pending.readUInt16LE(0) + 2;
+          if (pending.length < frameLength) break;
+          if (frameLength >= 3 && pending[2] === STOC_REPLAY) this.replayBytes = Uint8Array.from(pending.subarray(3, frameLength));
+          if (frameLength >= 3 && pending[2] === STOC_DUEL_START && !this.duelStartedAt) {
+            this.duelStartedAt = new Date().toISOString();
+            this.notifyHost();
+          }
+          pending = pending.subarray(frameLength);
+        }
+      });
+      const close = () => {
+        socket.destroy();
+        upstream.destroy();
+        this.humanSockets.delete(socket);
+      };
+      socket.once('close', close);
+      upstream.once('close', close);
+      socket.on('error', () => {});
+      upstream.on('error', () => {});
+    });
+    await new Promise((resolvePromise, reject) => {
+      this.publicServer.once('error', (error) => reject(error?.code === 'EADDRINUSE'
+        ? new Error(`Port ${this.hostPort} on ${this.bindAddress} is already in use; choose another hostPort.`)
+        : error));
+      this.publicServer.listen(this.hostPort, this.bindAddress, resolvePromise);
+    });
+  }
+
+  notifyHost() {
+    for (const waiter of [...this.hostWaiters]) waiter();
+  }
+
+  hasHostEvent() {
+    return Boolean(this.hostError || this.currentDecision?.terminal || this.decisionReady || this.chatInbox.length > 0);
+  }
+
+  async waitForHostEvent(timeoutMs) {
+    if (!this.hasHostEvent()) {
+      await new Promise((resolvePromise) => {
+        const done = () => {
+          clearTimeout(timer);
+          this.hostWaiters.delete(done);
+          resolvePromise();
+        };
+        const timer = setTimeout(done, timeoutMs);
+        this.hostWaiters.add(done);
+      });
+    }
+    const chat = this.chatInbox.splice(0);
+    const terminal = Boolean(this.currentDecision?.terminal);
+    const autoResolved = this.takeAutoResolved();
+    return {
+      event: this.hostError ? 'error' : terminal ? 'terminal' : this.decisionReady ? 'decision' : chat.length > 0 ? 'chat' : 'timeout',
+      chat,
+      ...(autoResolved.length ? { autoResolved } : {}),
+      decisionPending: this.decisionReady && !terminal,
+      terminalResult: this.terminalResult,
+      error: this.hostError,
+    };
+  }
+
+  sendChat(text) {
+    if (!this.policySocket || this.policySocket.destroyed) throw new Error('Model WindBot is not connected.');
+    const chunks = splitChat(text);
+    for (const chunk of chunks) {
+      this.policySocket.write(`${JSON.stringify({ chat: chunk })}\n`);
+      this.recordChat({ at: new Date().toISOString(), from: this.botName, self: true, text: chunk });
+    }
+    return chunks;
+  }
+
+  recordChat(entry) {
+    this.chatLog.push(entry);
+    if (this.chatLog.length > MAX_CHAT_LOG) this.chatLog.splice(0, this.chatLog.length - MAX_CHAT_LOG);
+  }
+
+  getRoomInfo() {
+    if (!this.hostMode) return null;
+    const hosts = this.bindAddress === '0.0.0.0' ? ['127.0.0.1', ...lanAddresses()] : [this.bindAddress];
+    return {
+      bindAddress: this.bindAddress,
+      port: this.hostPort,
+      connectAddresses: hosts.map((host) => `${host}:${this.hostPort}`),
+      password: '',
+      botName: this.botName,
+      modelTurnOrder: this.playerTurnOrder ?? 'rock-paper-scissors',
+      opponentConnected: this.humanSockets.size > 0,
+      opponentConnectedAt: this.humanConnectedAt,
+      duelStartedAt: this.duelStartedAt,
+      clientLaunch: this.clientLaunch,
+    };
   }
 
   async startTurnOrderProxy(duelPort) {
@@ -297,8 +539,32 @@ class YgoPro2DuelRunner {
       if (!decision) throw new Error(`Unable to enumerate YGOPro2 decision ${message.constructor?.name ?? request.message ?? 'unknown'}.`);
       decision.responsePlayer = 0;
       this.currentState = normalizePolicyState(request.state);
+      // A decision with exactly one legal answer (most often a chain window
+      // whose only option is "不连锁") is answered here instead of asking the model.
+      const forced = forcedDecisionAction(decision);
+      // The cap hands control back to the model if the server keeps re-asking
+      // (for example after rejecting the response) instead of looping forever.
+      if (forced && this.autoResolveForced && this.consecutiveAutoResolved < MAX_CONSECUTIVE_AUTO_RESOLVED) {
+        this.consecutiveAutoResolved += 1;
+        this.autoRespond(decision, forced);
+        return;
+      }
       this.currentDecision = decision;
+      this.decisionReady = true;
       this.resolvePending({ type: 'decision' });
+      this.notifyHost();
+      return;
+    }
+    if (request.type === 'chat') {
+      const entry = {
+        at: new Date().toISOString(),
+        from: String(request.sender ?? `player${request.player ?? ''}`),
+        player: Number(request.player ?? -1),
+        text: String(request.text ?? ''),
+      };
+      this.chatInbox.push(entry);
+      this.recordChat(entry);
+      this.notifyHost();
       return;
     }
     if (request.type === 'terminal') {
@@ -310,7 +576,9 @@ class YgoPro2DuelRunner {
         actions: [],
         message: null,
       };
+      this.decisionReady = false;
       this.resolvePending({ type: 'terminal' });
+      this.notifyHost();
       return;
     }
     if (request.type === 'replay' && request.replayBase64) {
@@ -318,16 +586,38 @@ class YgoPro2DuelRunner {
     }
   }
 
+  // Sends the only legal answer without involving the model. The pending
+  // waiter (if any) stays open until the next real decision or the duel end.
+  autoRespond(decision, action) {
+    const response = actionResponseBytes(action);
+    this.actionHistory.push({ label: String(action.label ?? ''), kind: 'auto', response: Uint8Array.from(response) });
+    this.autoResolvedTotal += 1;
+    this.autoResolved.push({ decision: decisionName(decision), label: String(action.label ?? '') });
+    if (this.autoResolved.length > MAX_AUTO_RESOLVED_LOG) this.autoResolved.splice(0, this.autoResolved.length - MAX_AUTO_RESOLVED_LOG);
+    this.policySocket.write(`${JSON.stringify({ responseBase64: Buffer.from(response).toString('base64') })}\n`);
+  }
+
+  takeAutoResolved() {
+    return this.autoResolved.splice(0);
+  }
+
   async submitResponse(response, action) {
     if (!this.policySocket || this.policySocket.destroyed) throw new Error('YGOPro2 external policy socket is not connected.');
     if (this.currentDecision?.terminal) throw new Error(`YGOPro2 duel is terminal: ${this.currentDecision.reason}.`);
-    const nextUpdate = this.waitForUpdate(this.decisionTimeoutMs);
     const responseBytes = Uint8Array.from(response ?? []);
+    this.consecutiveAutoResolved = 0;
     this.actionHistory.push({
       label: String(action?.label ?? ''),
       kind: String(action?.kind ?? ''),
       response: responseBytes,
     });
+    if (this.hostMode) {
+      // The human may take any time; callers wait with waitForHostEvent.
+      this.decisionReady = false;
+      this.policySocket.write(`${JSON.stringify({ responseBase64: Buffer.from(responseBytes).toString('base64') })}\n`);
+      return;
+    }
+    const nextUpdate = this.waitForUpdate(this.decisionTimeoutMs);
     this.policySocket.write(`${JSON.stringify({ responseBase64: Buffer.from(responseBytes).toString('base64') })}\n`);
     await nextUpdate;
   }
@@ -384,7 +674,12 @@ class YgoPro2DuelRunner {
   }
 
   failPending(error) {
-    this.pendingUpdate?.reject(error instanceof Error ? error : new Error(String(error)));
+    const failure = error instanceof Error ? error : new Error(String(error));
+    if (this.hostMode && !this.disposed && !this.currentDecision?.terminal && !this.hostError) {
+      this.hostError = failure.message;
+      this.notifyHost();
+    }
+    this.pendingUpdate?.reject(failure);
   }
 
   spawnProcess(label, executable, args, cwd) {
@@ -423,6 +718,16 @@ class YgoPro2DuelRunner {
   getBridgeStatus() {
     const scriptErrors = this.getScriptErrors();
     return {
+      mode: this.hostMode ? 'host' : 'windbot-opponent',
+      room: this.getRoomInfo(),
+      decisionPending: this.hostMode ? this.decisionReady : undefined,
+      hostEventPending: this.hostMode ? this.hasHostEvent() : undefined,
+      autoResolvedForcedDecisions: this.autoResolvedTotal,
+      hostError: this.hostError,
+      recentChat: this.hostMode ? this.chatLog.slice(-20) : undefined,
+      logTail: this.hostMode
+        ? Object.fromEntries(this.processes.map(({ label, logs }) => [label, logs.slice(-1500)]))
+        : undefined,
       running: !this.disposed,
       connected: Boolean(this.policySocket && !this.policySocket.destroyed),
       liveDuelBridge: Boolean(!this.disposed && this.policySocket && !this.policySocket.destroyed),
@@ -451,10 +756,10 @@ class YgoPro2DuelRunner {
       } : null,
       processes: this.processes.map(({ label, child }) => ({ label, pid: child.pid ?? null, running: child.exitCode === null })),
       paths: {
-        ygoPro2Root: this.installation.root,
-        aiServer: this.installation.paths.serverExecutable,
+        ygoPro2Root: this.installation?.root ?? null,
+        aiServer: this.hostMode ? BUNDLED_SERVER_EXECUTABLE : this.installation?.paths?.serverExecutable ?? null,
         isolatedAiServer: this.compatibilityRuntime?.serverExecutable ?? null,
-        opponentWindBot: this.installation.paths.windbotExecutable,
+        opponentWindBot: this.hostMode ? null : this.installation?.paths?.windbotExecutable ?? null,
         externalPolicyWindBot: this.externalPolicyClient.executable,
         aiServerWorkingDirectory: this.compatibilityRuntime?.root ?? null,
       },
@@ -473,6 +778,14 @@ class YgoPro2DuelRunner {
     if (this.disposed) return;
     this.disposed = true;
     this.failPending(new Error('YGOPro2 duel was disposed.'));
+    this.notifyHost();
+    for (const socket of this.humanSockets) socket.destroy();
+    if (this.publicServer) {
+      await Promise.race([
+        new Promise((resolvePromise) => this.publicServer.close(resolvePromise)),
+        delay(1000),
+      ]);
+    }
     this.policySocket?.destroy();
     this.turnOrderProxySocket?.destroy();
     this.turnOrderUpstreamSocket?.destroy();
@@ -552,6 +865,22 @@ function summarizeAction(action, index) {
   return { index, label: String(action?.label ?? `Action #${index}`), kind: String(action?.kind ?? ''), description: String(action?.text ?? '').replace(/\s+/g, ' ').slice(0, 180) };
 }
 
+// Returns the only legal action when the decision leaves no real choice;
+// factorized card selections and multi-option decisions always go to the model.
+export function forcedDecisionAction(value) {
+  const decision = asRecord(value);
+  if (decision.terminal || decision.factorizedSelection === true) return null;
+  const actions = Array.isArray(decision.actions) ? decision.actions : [];
+  if (actions.length !== 1) return null;
+  const [action] = actions;
+  if (action?.kind === 'factorized_select_card_candidate') return null;
+  return actionResponseBytes(action) ? action : null;
+}
+
+function decisionName(value) {
+  return asRecord(value).message?.constructor?.name ?? 'unknown';
+}
+
 function summarizeDecision(value) {
   const decision = asRecord(value);
   const actions = Array.isArray(decision.actions) ? decision.actions : [];
@@ -569,9 +898,15 @@ function summarizeDecision(value) {
 }
 
 function validateLaunchOptions(runner) {
-  if (!runner.installation?.capabilities?.bridgeLaunchReady) throw new Error('Selected YGOPro2 installation is not bridge-launch-ready.');
+  // Hosted rooms bring their own server, so only the windbot-opponent mode needs a YGOPro2 install.
+  if (!runner.hostMode && !runner.installation?.capabilities?.bridgeLaunchReady) throw new Error('Selected YGOPro2 installation is not bridge-launch-ready.');
   if (!runner.externalPolicyClient?.verified) throw new Error('Verified external-policy WindBot is unavailable.');
   if (runner.playerDeck.main.length < 40) throw new Error(`YGOPro2 player deck requires at least 40 main-deck cards; received ${runner.playerDeck.main.length}.`);
+  if (runner.hostMode) {
+    if (!runner.cardData?.cardsDbPath || !runner.cardData?.scriptsDir) throw new Error('Hosted rooms require the plugin card database and scripts.');
+    if (runner.playerTurnOrder && runner.playerTurnOrder !== 'first' && runner.playerTurnOrder !== 'second') throw new Error('modelTurnOrder must be "first", "second", or omitted.');
+    return;
+  }
   if (runner.playerTurnOrder !== 'first' && runner.playerTurnOrder !== 'second') throw new Error('YGOPro2 playerTurnOrder must be "first" or "second".');
   const profiles = runner.installation.opponentAiProfiles ?? [];
   if (profiles.length > 0 && !profiles.some((name) => name.toLowerCase() === runner.opponentAiProfile.toLowerCase())) {
@@ -730,6 +1065,157 @@ function scriptNeedsCompatibility(source, globals) {
   return globals.some((name) => new RegExp(`\\b${name}\\b`).test(source));
 }
 
+// The integrated release ships a YGOPro2 client here; the external release does not.
+export async function bundledClientExecutable() {
+  try {
+    return (await stat(BUNDLED_CLIENT_EXECUTABLE)).isFile() ? BUNDLED_CLIENT_EXECUTABLE : null;
+  } catch {
+    return null;
+  }
+}
+
+// Copies the plugin's card data into the bundled client so it shows the same
+// cards the server plays with. Only the bundled client is ever written.
+export async function syncBundledClientCardData(clientExecutable, cardData) {
+  const root = dirname(clientExecutable);
+  const data = asRecord(cardData);
+  const copies = [
+    [data.cardsDbPath, join(root, 'cdb', 'cards.cdb')],
+    [data.prereleaseReleaseDbPath, join(root, 'expansions', 'test-release.cdb')],
+    [data.prereleaseUpdateDbPath, join(root, 'expansions', 'test-update.cdb')],
+    [data.lflistPath, join(root, 'config', 'lflist.conf')],
+  ];
+  const updated = [];
+  for (const [source, target] of copies) {
+    if (!source) continue;
+    let from;
+    try { from = await stat(source); } catch { continue; }
+    const to = await stat(target).catch(() => null);
+    if (to && to.size === from.size && to.mtimeMs >= from.mtimeMs) continue;
+    await mkdir(dirname(target), { recursive: true });
+    await copyFile(source, target);
+    updated.push(basename(target));
+  }
+  return updated;
+}
+
+// Opens the YGOPro2 client and joins the hosted room. A running client polls
+// commamd.shell about once a second on its menu screens; a new client gets the
+// join through its -n/-h/-p/-j arguments.
+export async function launchYgoPro2Client(runner, clientExecutable) {
+  if (!clientExecutable) return { launched: false, reason: 'YGOPro2 client was not found; join manually.' };
+  const root = dirname(clientExecutable);
+  const host = runner.bindAddress === '0.0.0.0' ? '127.0.0.1' : runner.bindAddress;
+  const name = await readYgoPro2PlayerName(root);
+  const quoted = /\s/.test(name) ? `"${name}"` : name;
+  const running = await isClientRunning(clientExecutable);
+  if (running) {
+    await writeFile(join(root, 'commamd.shell'), `online ${quoted} ${host} ${runner.hostPort} 0x233 `, 'utf8');
+  } else {
+    const child = spawn(clientExecutable, ['-n', name, '-h', host, '-p', String(runner.hostPort), '-j'], {
+      cwd: root,
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.on('error', () => {});
+    child.unref();
+  }
+  return { launched: true, alreadyRunning: running, client: clientExecutable, playerName: name, address: `${host}:${runner.hostPort}` };
+}
+
+async function readYgoPro2PlayerName(root) {
+  try {
+    const text = await readFile(join(root, 'config', 'config.conf'), 'utf8');
+    const match = /^name->(.+)$/m.exec(text);
+    if (match && match[1].trim()) return match[1].trim();
+  } catch { }
+  return 'Player';
+}
+
+// Matches by full path, so the bundled client and a separate YGOPro2 install
+// are told apart even though both run as YGOPro2.exe.
+function isClientRunning(executable) {
+  if (process.platform !== 'win32') return Promise.resolve(false);
+  const name = basename(executable).replace(/'/g, "''");
+  const script = `Get-CimInstance Win32_Process -Filter "Name='${name}'" | ForEach-Object { $_.ExecutablePath }`;
+  return new Promise((resolvePromise) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10000 }, (error, stdout) => {
+      const target = executable.toLowerCase();
+      resolvePromise(!error && String(stdout).split(/\r?\n/).some((line) => line.trim().toLowerCase() === target));
+    });
+  });
+}
+
+export function bundledServerExecutable() {
+  return BUNDLED_SERVER_EXECUTABLE;
+}
+
+// Builds an AI.Server working directory from the plugin's own card data, so a
+// card-data refresh updates the hosted server without touching YGOPro2.
+export async function prepareBundledServerRuntime(cardData, runtimeRoot) {
+  const data = asRecord(cardData);
+  if (!data.cardsDbPath || !data.scriptsDir) throw new Error('Bundled AI.Server requires the plugin cards database and script directory.');
+  await mkdir(runtimeRoot, { recursive: true });
+  const serverExecutable = join(runtimeRoot, basename(BUNDLED_SERVER_EXECUTABLE));
+  await copyFile(BUNDLED_SERVER_EXECUTABLE, serverExecutable);
+  await mkdir(join(runtimeRoot, 'cdb'), { recursive: true });
+  await copyFile(data.cardsDbPath, join(runtimeRoot, 'cdb', 'cards.cdb'));
+  const expansions = join(runtimeRoot, 'expansions');
+  await mkdir(expansions, { recursive: true });
+  const prereleaseDbs = [];
+  for (const path of [data.prereleaseReleaseDbPath, data.prereleaseUpdateDbPath]) {
+    if (!path) continue;
+    try {
+      await copyFile(path, join(expansions, basename(path)));
+      prereleaseDbs.push(path);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  }
+  // Prerelease scripts go in an expansion archive that the server checks before ./script.
+  // The prerelease base scripts (constant/utility/procedure) travel with them: the
+  // prerelease card scripts depend on definitions only those newer copies provide.
+  let prereleaseScripts = 0;
+  if (data.prereleaseScriptsDir) {
+    const archive = new JSZip();
+    try {
+      for (const entry of await readdir(data.prereleaseScriptsDir, { withFileTypes: true })) {
+        if (!entry.isFile() || !/^[A-Za-z0-9_]+\.lua$/i.test(entry.name)) continue;
+        archive.file(`script/${entry.name}`, await readFile(join(data.prereleaseScriptsDir, entry.name)));
+        prereleaseScripts += 1;
+      }
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    if (prereleaseScripts > 0) {
+      await writeFile(join(expansions, 'dsh-prerelease-scripts.zip'), await archive.generateAsync({ type: 'nodebuffer' }));
+    }
+  }
+  await linkOrCopyDirectory(data.scriptsDir, join(runtimeRoot, 'script'));
+  await mkdir(join(runtimeRoot, 'config'), { recursive: true });
+  if (data.lflistPath) {
+    await copyFile(data.lflistPath, join(runtimeRoot, 'config', 'lflist.conf')).catch((error) => {
+      if (error?.code !== 'ENOENT') throw error;
+    });
+  }
+  await mkdir(join(runtimeRoot, 'replay'), { recursive: true });
+  return {
+    root: runtimeRoot,
+    serverExecutable,
+    sourceArchive: null,
+    bootstrapFiles: [],
+    replacedStaleFiles: [],
+    compatibilityGlobals: [],
+    patchedScripts: 0,
+    resourceMappings: [
+      { name: 'cdb', source: data.cardsDbPath, target: join(runtimeRoot, 'cdb', 'cards.cdb'), mode: 'copy' },
+      { name: 'script', source: data.scriptsDir, target: join(runtimeRoot, 'script'), mode: 'link-or-copy' },
+      { name: 'expansions', source: data.prereleaseScriptsDir ?? null, target: expansions, mode: 'prerelease', prereleaseDbs, prereleaseScripts },
+    ],
+    cardDatabases: [data.cardsDbPath, ...prereleaseDbs],
+  };
+}
+
 async function linkOrCopyDirectory(source, target) {
   try {
     await symlink(source, target, process.platform === 'win32' ? 'junction' : 'dir');
@@ -815,6 +1301,22 @@ function normalizeSelectionIndexes(value) {
   if (!Array.isArray(value) || value.length === 0) return null;
   const indexes = value.map(readIndex);
   return indexes.some((index) => index === null) || new Set(indexes).size !== indexes.length ? null : indexes;
+}
+
+// YGOPro chat packets carry at most 255 UTF-16 units; send long replies in parts.
+function splitChat(text) {
+  const chunks = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    const characters = [...line.trim()];
+    for (let at = 0; at < characters.length; at += CHAT_CHUNK_LENGTH) chunks.push(characters.slice(at, at + CHAT_CHUNK_LENGTH).join(''));
+  }
+  return chunks.filter(Boolean).slice(0, 20);
+}
+
+function lanAddresses() {
+  return Object.values(networkInterfaces()).flat()
+    .filter((entry) => entry && entry.family === 'IPv4' && !entry.internal)
+    .map((entry) => entry.address);
 }
 
 function normalizeLabel(value) { return String(value ?? '').replace(/\s+/g, '').toLowerCase(); }

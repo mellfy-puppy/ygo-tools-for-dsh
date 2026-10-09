@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -31,6 +31,7 @@ namespace WindBot.Game
         private int _select_hint;
         private GameMessage _lastMessage;
         private ExternalPolicyClient _externalPolicy;
+        private int _chatSeat = -1;
 
         private static readonly HashSet<GameMessage> ExternalDecisionMessages = new HashSet<GameMessage>
         {
@@ -61,7 +62,10 @@ namespace WindBot.Game
             Deck = Deck.Load(Game.DeckFile ?? _ai.Executor.Deck);
 
             if (String.Equals(Game.Deck, "YGOFTKExternal", StringComparison.OrdinalIgnoreCase))
+            {
                 _externalPolicy = new ExternalPolicyClient(_duel);
+                _externalPolicy.SendChat = Game.Chat;
+            }
 
             _select_hint = 0;
         }
@@ -284,9 +288,17 @@ namespace WindBot.Game
             Connection.Send(CtosMessage.HandResult, (byte)result);
         }
 
+        // Sends model chat queued while no decision is pending.
+        public void Tick()
+        {
+            if (_externalPolicy != null)
+                _externalPolicy.Pump();
+        }
+
         private void OnSelectTp(BinaryReader packet)
         {
-            bool start = _ai.OnSelectHand();
+            string turnOrder = _externalPolicy != null ? Config.GetString("TurnOrder", "") : "";
+            bool start = turnOrder == "first" ? true : turnOrder == "second" ? false : _ai.OnSelectHand();
             Connection.Send(CtosMessage.TpResult, (byte)(start ? 1 : 0));
         }
 
@@ -327,9 +339,18 @@ namespace WindBot.Game
 
         private void OnChat(BinaryReader packet)
         {
-            if (Program.ServerMode) return;
+            if (Program.ServerMode && _externalPolicy == null) return;
             int player = packet.ReadInt16();
             string message = packet.ReadUnicode(256);
+            // Forward chat from other room members; the server echoes our own lines back.
+            int seat = _chatSeat >= 0 ? _chatSeat : _room.Position;
+            if (_externalPolicy != null && player != seat)
+            {
+                // Room names keep join order, so name the other duelist by our join position.
+                string sender = player < 2 ? _room.Names[1 - _room.Position] : player < 4 ? _room.Names[player] : null;
+                _externalPolicy.NotifyChat(player, sender ?? ("player" + player), message);
+            }
+            if (Program.ServerMode) return;
             string myName = (player != 0) ? _room.Names[1] : _room.Names[0];
             string otherName = (player == 0) ? _room.Names[1] : _room.Names[0];
             if (player < 4)
@@ -409,6 +430,8 @@ namespace WindBot.Game
         private void OnStart(BinaryReader packet)
         {
             int type = packet.ReadByte();
+            // The server swaps duelist seats when the second seat goes first; chat uses the new seat.
+            _chatSeat = type & 0xF;
             _duel.IsFirst = (type & 0xF) == 0;
             _duel.Turn = 0;
             _duel.LastChainLocation = 0;
@@ -585,7 +608,8 @@ namespace WindBot.Game
             _duel.Turn++;
             _duel.Player = GetLocalPlayer(packet.ReadByte());
             _ai.OnNewTurn();
-            if (_externalPolicy != null && _duel.Turn > 1)
+            // FullDuel=true keeps playing past the first turn (DSH host matches).
+            if (_externalPolicy != null && _duel.Turn > 1 && !Config.GetBool("FullDuel", false))
             {
                 _externalPolicy.NotifyCutoff();
                 Game.Surrender();

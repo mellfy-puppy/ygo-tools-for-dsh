@@ -31,7 +31,7 @@ DSH 提供的 SDK 调用即可；这是框架工具通道。
 
 - `queryCards`: `get` / `search`
 - `manageCardDataSources`: `inspect` / `refresh`
-- `manageYgoPro2`: `discover` / `status`
+- `manageYgoPro2`: `discover` / `status` / `host` / `wait` / `chat` / `close`
 - `getBanlistContext`
 - `manageSessionDeck`: `set` / `get` / `check` / `edit` / `export`
 - `resetGame`
@@ -64,6 +64,41 @@ DSH 提供的 SDK 调用即可；这是框架工具通道。
 5. 录像经验不是当前合法性的证明。实际执行前用当前合法动作验证，
    不直接复用其他对局中的动作序号、位置或随机结果。用户要求删除
    已保存经验时才使用 `delete` 并传 `confirm:true`。
+
+## 开房与真人对战
+
+用户要用 YGOPro2 客户端和模型对打时：
+
+1. 先用 `manageSessionDeck({action:"set"})` 载入模型使用的卡组（主卡组至少
+   40 张），再调用 `manageYgoPro2({action:"host"})`。默认只监听本机
+   `127.0.0.1:7911`；只有用户明确要让局域网其他电脑加入时才传
+   `bindAddress:"0.0.0.0"`，并提醒用户该端口没有密码，任何能访问它的人都能
+   进房。`modelTurnOrder` 只在用户指定先后手时传。
+2. 房间使用插件自带的服务端和卡库。开房后插件默认打开 YGOPro2 并自动进房
+   （`clientLaunch`）：集成包用自带客户端（`clientSource:"bundled"`），外置包
+   用本机安装的 YGOPro2；用户不想自动打开时传 `launchClient:false`。告诉用户房间已开、在 YGOPro2 里点准备即可；
+   `clientLaunch.launched` 为 false 时，把 `room.connectAddresses` 告诉用户
+   手动填写，密码留空。
+3. 结果里有 `duelWatcher.jobId` 时，告知用户后直接结束本轮，不要循环等待：
+   用户在 YGOPro2 里开始对局后，这个后台任务会结束并唤醒会话，届时按它的
+   提示调用 `wait` 进入下面的循环。没有 `duelWatcher` 时直接进入循环。
+4. 只有一个合法选项的决策（最常见的是只有“不连锁”的连锁窗口）由插件自动应答，
+   不会交给模型；结果里的 `autoResolved` 列出这期间自动处理的项目。交给模型的
+   决策都至少有两个选项，按卡面效果判断，不要默认选第一个。
+5. 循环调用 `manageYgoPro2({action:"wait"})`：
+   - `event:"timeout"` 表示对手还在进房或思考，直接再 `wait`，不要结束。
+   - `event:"decision"` 时，根据 `state` 和 `nextDecision.actions` 用
+     `executeAction` 出手；它会继续等待并返回下一个事件，格式与 `wait`
+     相同。
+   - `event:"chat"` 时，`chat` 里是用户在游戏里发的话；需要回复就用
+     `manageYgoPro2({action:"chat",text})`，然后继续等待或出手。
+   - `event:"terminal"` 时，对局结束，报告 `terminalResult`。
+   - `event:"error"` 时，报告 `error`，不要重开房间，除非用户要求。
+6. 对局结束、用户要求停止，或要换卡组时，调用
+   `manageYgoPro2({action:"close"})`。
+
+开房对局同样不可回滚，模拟和检查点不可用；对手是真人，未公开信息只来自
+服务器下发的内容。
 
 ## 硬性规则
 

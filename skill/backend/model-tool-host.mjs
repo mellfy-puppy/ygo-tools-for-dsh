@@ -142,7 +142,13 @@ export function createModelToolHost(config = {}, hostOptions = {}) {
       case 'manageCardDataSources':
         return executeBackend(action === 'inspect' ? 'inspectCardDataSources' : 'refreshCardDataSources');
       case 'manageYgoPro2':
-        return executeBackend(action === 'discover' ? 'discoverYgoPro2' : 'getYgoPro2BridgeStatus');
+        return executeBackend({
+          discover: 'discoverYgoPro2',
+          host: 'hostYgoPro2Match',
+          wait: 'waitYgoPro2Event',
+          chat: 'sendYgoPro2Chat',
+          close: 'closeYgoPro2Match',
+        }[action] ?? 'getYgoPro2BridgeStatus');
       case 'getBanlistContext':
       case 'executeAction':
       case 'simulateActions':

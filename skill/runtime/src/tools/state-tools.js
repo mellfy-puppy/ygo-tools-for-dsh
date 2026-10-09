@@ -17,14 +17,16 @@ const LINK_MARKERS = [
   { bit: 0x080, label: '上' },
   { bit: 0x100, label: '右上' },
 ];
-const P0_LINK_TARGETS_BY_SEQUENCE = new Map([
-  [0, { 0x020: 1 }],
-  [1, { 0x008: 0, 0x020: 2, 0x080: 5 }],
-  [2, { 0x008: 1, 0x020: 3, 0x040: 5, 0x100: 6 }],
-  [3, { 0x008: 2, 0x020: 4, 0x080: 6 }],
-  [4, { 0x008: 3 }],
-  [5, { 0x001: 1, 0x002: 2 }],
-  [6, { 0x002: 2, 0x004: 3 }],
+// Mirrors ocgcore card::get_linked_zone. Each marker maps to [side, sequence]
+// from the controller's view; 'opp' zones use the opponent's own sequence.
+const LINK_TARGETS_BY_SEQUENCE = new Map([
+  [0, { 0x020: ['self', 1], 0x100: ['self', 5] }],
+  [1, { 0x008: ['self', 0], 0x020: ['self', 2], 0x080: ['self', 5] }],
+  [2, { 0x008: ['self', 1], 0x020: ['self', 3], 0x040: ['self', 5], 0x100: ['self', 6] }],
+  [3, { 0x008: ['self', 2], 0x020: ['self', 4], 0x080: ['self', 6] }],
+  [4, { 0x008: ['self', 3], 0x040: ['self', 6] }],
+  [5, { 0x001: ['self', 0], 0x002: ['self', 1], 0x004: ['self', 2], 0x040: ['opp', 4], 0x080: ['opp', 3], 0x100: ['opp', 2] }],
+  [6, { 0x001: ['self', 2], 0x002: ['self', 3], 0x004: ['self', 4], 0x040: ['opp', 2], 0x080: ['opp', 1], 0x100: ['opp', 0] }],
 ]);
 
 /** @typedef {{ player: number | null, opponent: number | null }} LifePoints */
@@ -288,9 +290,7 @@ function buildLinkMonsterSummary(card, fallbackSequence, playerKey, resolveCardN
   const arrows = LINK_MARKERS
     .filter((marker) => (linkMarker & marker.bit) !== 0)
     .map((marker) => marker.label);
-  const pointedZones = playerKey === 'p0'
-    ? linkedMainMonsterZonesForP0(sequence, linkMarker)
-    : [];
+  const pointedZones = linkedMonsterZones(playerKey, sequence, linkMarker);
   return {
     player: playerKey === 'p0' ? 'P0' : 'P1',
     name: resolveCardName(card),
@@ -304,19 +304,23 @@ function buildLinkMonsterSummary(card, fallbackSequence, playerKey, resolveCardN
 }
 
 /**
+ * Zones pointed to by a link monster, including Extra Monster Zones and the
+ * opponent's Main Monster Zones.
+ * @param {'p0' | 'p1'} playerKey
  * @param {number} sequence
  * @param {number} linkMarker
  * @returns {string[]}
  */
-function linkedMainMonsterZonesForP0(sequence, linkMarker) {
+function linkedMonsterZones(playerKey, sequence, linkMarker) {
   if (!Number.isFinite(sequence)) return [];
-  const targetsByMarker = P0_LINK_TARGETS_BY_SEQUENCE.get(sequence);
+  const targetsByMarker = LINK_TARGETS_BY_SEQUENCE.get(sequence);
   if (!targetsByMarker) return [];
+  const opponentKey = playerKey === 'p0' ? 'p1' : 'p0';
   const zones = [];
   for (const marker of LINK_MARKERS) {
     if ((linkMarker & marker.bit) === 0) continue;
     const target = targetsByMarker[marker.bit];
-    if (Number.isInteger(target)) zones.push(`P0 主怪兽区${target}`);
+    if (target) zones.push(monsterZoneLabel(target[0] === 'self' ? playerKey : opponentKey, target[1]));
   }
   return uniqStrings(zones);
 }
@@ -327,7 +331,7 @@ function linkedMainMonsterZonesForP0(sequence, linkMarker) {
  */
 function formatLinkMonsterReason(monster) {
   const arrows = monster.arrows.length > 0 ? monster.arrows.join('/') : '未知箭头';
-  const targets = monster.pointedZones.length > 0 ? monster.pointedZones.join('、') : '未指向我方可用主怪兽区';
+  const targets = monster.pointedZones.length > 0 ? monster.pointedZones.join('、') : '未指向任何怪兽区';
   return `${monster.name}位于${monster.zone}，箭头${arrows}，指向${targets}`;
 }
 

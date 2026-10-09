@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -85,6 +85,7 @@ namespace WindBot.Game
         public void Tick()
         {
             Connection.Update();
+            _behavior.Tick();
         }
 
         public void Chat(string message)

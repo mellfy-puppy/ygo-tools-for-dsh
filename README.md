@@ -1,87 +1,169 @@
 <div align="center">
 
-# YGO Tools for DSH
+# 🃏 YGO Tools for DSH
 
-**面向 DeepSeek Harness 的游戏王研究工具**
+**让 DeepSeek Harness 的模型查卡、推演、复盘，还能在 YGOPro2 里和你打一局**
 
-卡片数据 · 卡组分析 · 规则验证 · Combo 推演 · 录像复盘
+[![Release](https://img.shields.io/github/v/release/mellfy-puppy/ygo-tools-for-dsh?style=for-the-badge&color=8b5cf6)](https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/latest)
+[![License](https://img.shields.io/badge/license-0BSD-22c55e?style=for-the-badge)](./LICENSE)
+![DSH](https://img.shields.io/badge/DSH-0.1.7--rc.2-0ea5e9?style=for-the-badge)
+[![Node](https://img.shields.io/badge/node-%E2%89%A522-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
+
+`卡片数据` · `卡组分析` · `OCG 规则引擎` · `Combo 推演` · `录像复盘` · `⚔️ 和模型对局`
+
+[快速开始](#quick-start) · [v1.4.0 新内容](#whats-new) · [和模型对局](#play-the-model) · [工具一览](#tools) · [更新说明](./docs/release-1.4.0.md)
 
 </div>
 
-<div align="center">
+---
 
-`DSH 插件`　`OCG 规则引擎`　`YGOPro2 桥接`　`Node.js 22+`
+YGO Tools for DSH 是 DeepSeek Harness 的原生游戏王插件。它把卡片数据、禁限表、卡组管理和 OCG 规则引擎接进模型：模型说的每一步都要先在真实规则引擎里验证合法，而不是凭记忆背卡文。
 
-</div>
+<a id="whats-new"></a>
 
-<br>
-
-YGO Tools for DSH 是一个面向 DeepSeek Harness 的原生游戏王工具插件。它把卡片数据、禁限表、卡组管理和 OCG 规则引擎接入模型，使游戏王研究从文本查询进入可验证的决斗状态。
-
-## 快速开始
-
-从 GitHub Release 安装插件：
-
-```powershell
-dsh plugin --profile web add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.3.0/ygo-tools-for-dsh-1.3.0.tgz"
-```
-
-安装插件后，Web 界面在新建会话时即可直接选用“游戏王模式”。该模式在 DSH 0.1.7-rc.2 标准能力基线上，叠加注入专属游戏王工具链。
-
-若 Web 端未显示新预设，重启 DSH 后新建会话并选择“游戏王模式”即可。升级前已经开始的会话保留原有预设绑定。
-
-[查看 v1.3.0 更新说明](./docs/release-1.3.0.md)
-
-## 项目概览
-
-```text
-┌──────────────────────┐     ┌─────────────────────────┐
-│   DeepSeek Harness   │────▶│    YGO Tools for DSH    │
-└──────────────────────┘     └────────────┬────────────┘
-                                          │
-              ┌───────────────────────────┼───────────────────────────┐
-              ▼                           ▼                           ▼
-       卡片知识库                  规则验证                    决斗桥接
-       卡片 · 禁限表               OCG 引擎 · 分支推演          YGOPro2 · AI.Server
-```
-
-插件负责工具注册、会话管理和结果返回；规则引擎在独立进程中按需运行，维护局面并计算合法动作。
-
-## 主要能力
+## ✨ v1.4.0 新内容
 
 <table>
 <tr>
-<td width="33%" valign="top">
+<td width="50%" valign="top">
 
-### `01` 卡片数据
+### ⚔️ 新增：在 YGOPro2 里和模型对局
 
-查询卡片、卡文、属性、类型、数值和关联信息。
-
-读取禁限表和卡库状态；正式卡与先行卡数据可按需更新。
-
-</td>
-<td width="33%" valign="top">
-
-### `02` 卡组与 Combo
-
-装载、检查、编辑和导出 YDK 卡组。
-
-解析 Combo 路线，验证动作顺序，并比较不同展开分支。
+- 对模型说“开个房间和我打”，插件开房并**自动打开 YGOPro2 进房**
+- 你点开始后 DSH **自动接上**，模型每步操作都显示在对话里
+- 游戏内**聊天双向转发**
+- 只有“不连锁”这种**单选项窗口自动跳过**，一局少停 70% 左右
+- 服务端随插件提供，**更新卡库后开房就用新卡**
 
 </td>
-<td width="33%" valign="top">
+<td width="50%" valign="top">
 
-### `03` 决斗状态
+### 🔗 修复：连接怪兽的格子提示
 
-创建局面、设置起手、观察合法动作并执行操作。
-
-支持检查点、录像分析，以及可选的 YGOPro2 桥接。
+- **箭头读错**：连接值被当成箭头，交织绵羊（左下/右下）曾显示成“箭头下”
+- **格子偏移**：额外怪兽区的箭头整体错了一格，现在按 ocgcore 的算法计算
+- 补全额外怪兽区指向对方场地、主怪兽区斜上指向额外怪兽区的情况
 
 </td>
 </tr>
 </table>
 
-## 工具一览
+> [!TIP]
+> 完整改动见 [v1.4.0 更新说明](./docs/release-1.4.0.md) 和 [CHANGELOG](./CHANGELOG.md)。
+
+<a id="quick-start"></a>
+
+## 🚀 快速开始
+
+Release 提供两个安装包，插件代码完全相同，区别只在是否自带对局客户端：
+
+| 安装包 | 内容 | 适合 |
+| :--- | :--- | :--- |
+| 📦 **integrated** | 插件 + YGOPro2 客户端（不含卡图） | 没装 YGOPro2，想直接和模型对局 |
+| 🪶 **external** | 只有插件 | 已经装了 YGOPro2，或只用卡查、推演 |
+
+```powershell
+# 集成包：自带对局客户端
+dsh plugin --profile web add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.4.0/ygo-tools-for-dsh-1.4.0-integrated.tgz"
+
+# 外置包：使用本机已安装的 YGOPro2
+dsh plugin --profile web add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.4.0/ygo-tools-for-dsh-1.4.0-external.tgz"
+```
+
+安装后在 Web 界面新建会话，选择 **游戏王模式** 即可。
+
+> [!NOTE]
+> 如果没看到“游戏王模式”，重启 DSH 后再新建会话。升级前已经开始的会话会保留原来的模式。
+
+<a id="play-the-model"></a>
+
+## ⚔️ 和模型对局
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor 你
+    participant DSH as DSH 对话
+    participant 插件 as YGO 插件
+    participant 房间 as AI.Server 房间
+    participant 客户端 as YGOPro2
+
+    你->>DSH: “开个房间和我打一局”
+    DSH->>插件: 载入卡组 + manageYgoPro2 host
+    插件->>房间: 开房，模型的 WindBot 入座
+    插件->>客户端: 自动打开并进房
+    你->>客户端: 点准备，开始对局
+    房间-->>DSH: 后台任务唤醒会话
+    loop 每一个需要模型判断的决策
+        房间->>DSH: 场面 + 合法动作
+        DSH->>房间: 模型选择的动作
+    end
+    房间-->>你: 对局结束
+```
+
+**你只需要在 YGOPro2 里点准备。** 其余流程：
+
+| 环节 | 做了什么 |
+| :--- | :--- |
+| 🏠 开房 | 插件用自带的 AI.Server 和自己的卡库开房，不读取本机 YGOPro2 的数据 |
+| 🖥️ 进房 | 自动打开 YGOPro2 并加入房间；客户端已开着时直接切进房间 |
+| ⏰ 接续 | 开房时登记 DSH 后台任务，你开始对局后自动唤醒会话 |
+| 🧠 决策 | 模型拿到场面和合法动作再出手，每一步都显示在 DSH 对话里 |
+| ⚡ 跳过 | 只有一个选项的决策（比如只有“不连锁”）由插件直接应答，结果里的 `autoResolved` 会列出来 |
+| 💬 聊天 | 你在游戏里说的话会传给模型，模型也能回到游戏聊天框 |
+
+> [!IMPORTANT]
+> 房间默认只监听 `127.0.0.1`，只有本机能进。要让局域网其他电脑加入，需要明确让模型用 `bindAddress:"0.0.0.0"` 开房；房间没有密码，能访问这个端口的人都能进来。
+
+<details>
+<summary><b>集成包和外置包开房时有什么区别？</b></summary>
+
+<br>
+
+- **集成包**：只使用自带的 YGOPro2 客户端，开房前把插件卡库同步给它，不会搜索或改动本机其他 YGOPro2。
+- **外置包**：按环境变量和常见安装位置查找本机 YGOPro2；找不到时，模型会把房间地址告诉你手动加入（IP + 端口，密码留空）。
+
+两种包的服务端都随插件提供，卡库以插件为准。
+
+</details>
+
+## 🧩 主要能力
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+### 📚 卡片数据
+
+查询卡片、卡文、属性、类型、数值和关联信息。
+
+读取禁限表和卡库状态；正式卡与先行卡可以联网增量更新。
+
+</td>
+<td width="33%" valign="top">
+
+### 🧪 卡组与 Combo
+
+装载、检查、编辑和导出 YDK 卡组。
+
+解析 Combo 路线，验证动作顺序，比较不同展开分支。
+
+</td>
+<td width="33%" valign="top">
+
+### 🎲 决斗状态
+
+创建局面、固定起手、观察合法动作并执行。
+
+支持检查点回滚、录像分析，以及在 YGOPro2 里和模型对局。
+
+</td>
+</tr>
+</table>
+
+<a id="tools"></a>
+
+## 🛠️ 工具一览
 
 | 类别 | 工具 |
 | :--- | :--- |
@@ -90,73 +172,84 @@ dsh plugin --profile web add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/
 | **决斗** | `resetGame` · `observeDuel` · `executeAction` · `simulateActions` |
 | **状态** | `manageCheckpoint` · `manageEngineSession` |
 | **分析** | `analyzeCombo` · `analyzeReplay` · `saveArtifact` |
-| **桥接** | `manageYgoPro2` |
+| **对局** | `manageYgoPro2`：`discover` / `status` / `host` / `wait` / `chat` / `close` |
 
-## 卡组录像学习与 Skill 上下文动态注入（`learnDeck`）
-工具集总数由 14 项扩充至 15 项，新增 `learnDeck` 工具，为模型引入自动化卡组经验归纳与复用能力：
-- **操作提取与策略复盘**：从 YRP 决斗录像中提取可见操作流，由模型结合对局复盘提炼策略要点（`strategyNotes`），并持久化为与卡组强绑定的 Markdown Skill 文件。
-- **系统边界与定位**：本方案属于“外部持久化 Skill 存储与动态会话上下文检索注入”，不改动模型底层权重；录像提取的操作与模型总结提供策略指导，实际对局仍以运行时生成的合法动作集为准进行动态核验。若录像解析中断或不完整，系统将明确标注为仅覆盖前缀操作。
-- **卡组指纹与精准匹配**：卡组指纹覆盖主卡组（Main）、额外卡组（Extra）与副卡组（Side），采用多重集比对（忽略构筑排列顺序，严格保留同名卡数量）。卡表调整将自动切断旧 Skill 匹配；当 YRP 录像未包含副卡组数据时，支持降级绑定主卡组与额外卡组完全一致的当前会话卡组。
-- **全生命周期管理**：`learnDeck` 提供学习（`learn`）、检索（`list`）、查看（`get`）、激活（`activate`）及删除（`delete`）五项核心操作，策略复盘支持二次更新保存；覆盖存量记录与物理删除必须显式传入对应参数。
+<details>
+<summary><b>🎓 卡组录像学习（<code>learnDeck</code>）</b></summary>
 
+<br>
+
+从 YRP 录像里提取可见操作，由模型复盘总结策略要点（`strategyNotes`），保存为和卡组绑定的 Skill 文件。之后载入同一副卡组时自动激活。
+
+- **卡组指纹**：覆盖主卡组、额外卡组和副卡组，忽略排列顺序、保留每张卡的数量。卡组改动后旧经验自动失效。
+- **不是合法性证明**：录像经验只是策略参考，实际出手仍以运行时生成的合法动作为准。
+- **五个操作**：`learn` / `list` / `get` / `activate` / `delete`。删除需要传 `confirm:true`。
+- **存储位置**：默认 `$DSH_HOME/ygo-tools-for-dsh/deck-skills`，可用 `deckSkillDir` 或 `YGO_DECK_SKILL_DIR` 改。
 
 ```json
 { "action": "learn", "file": "C:/replays/example.yrp", "deckName": "我的卡组", "skillName": "my-deck", "strategyNotes": "由模型在复盘后填写策略总结。" }
 ```
 
-```json
-{ "action": "list", "matchingOnly": true }
+</details>
+
+## ⚙️ 运行方式
+
+```mermaid
+flowchart LR
+    A[DSH 会话] -->|工具调用| B[YGO 插件]
+    B -->|HTTP 127.0.0.1:19981| C[(OCG 规则引擎<br/>独立进程)]
+    C -->|开房| D[AI.Server + 模型 WindBot]
+    D <-->|对局| E[YGOPro2 客户端]
 ```
 
-```json
-{ "action": "get", "skillName": "my-deck" }
+- 引擎按需启动；挂载插件本身不会启动决斗进程，DSH 重启后引擎保留。
+- 决斗状态和研究过程默认只在内存里；只有明确要求时才导出路线、录像等文件。`learnDeck` 的 `learn` 会保存 Skill 文件。
+- 内置规则引擎本身没有图形界面，对局画面由 YGOPro2 客户端提供。
+
+## 🏗️ 从源码打包
+
+```powershell
+node scripts/build-release.mjs external
+node scripts/build-release.mjs integrated --client <YGOPro2 安装目录>
 ```
 
-```json
-{ "action": "delete", "skillName": "my-deck", "confirm": true }
-```
+`integrated` 会去掉卡图、录像、卡组、客户端自带的 AI 和个人配置（昵称重置为 `Player`），再写入插件卡库。输出在 `dist/`。
 
-- **技能存储路径**：Skill 默认持久化保存在 `$DSH_HOME/ygo-tools-for-dsh/deck-skills`，可通过插件配置参数 `deckSkillDir` 或环境变量 `YGO_DECK_SKILL_DIR` 灵活重定向。
+<details>
+<summary><b>📁 项目结构</b></summary>
 
-## 运行方式
+<br>
 
 ```text
-DSH 会话
-    │
-    ├─ 工具调用 ────────────────┐
-    │                           ▼
-    │                    YGO 插件进程
-    │                           │
-    │                    持久引擎客户端
-    │                           │
-    └───────────────────────────▼
-                         OCG 规则引擎
-                         127.0.0.1:19981
+lib/                          插件入口、DSH 技能说明、对局开始监听
+skill/backend/                工具、会话、引擎服务与 YGOPro2 桥接
+skill/resources/lib/          卡库、禁限表与卡片脚本
+skill/resources/ygopro2-bridge/
+  ├─ server/                  AI.Server（GPLv3）
+  └─ windbot/                 模型用的 WindBot 及源码
+skill/vendor/                 随包提供的运行依赖
+scripts/build-release.mjs     两种发布包的打包脚本
+tests/                        自动化测试
 ```
 
-- 引擎按需启动，挂载插件本身不会立即启动决斗进程。
-- 决斗状态和研究过程默认保存在内存中。
-- 只有在明确要求时才导出路线、录像等文件；`learnDeck` 的 `learn` 操作会保存技能文件。
-- YGOPro2 是可选外部后端。
+</details>
 
-## 适用范围
+## 📄 许可
 
-适合用于卡片检索、卡组检查、Combo 验证、决策分支比较和录像复盘。
+插件代码使用 [0BSD](./LICENSE)。
 
-为了轻量化，内置引擎不是图形化游戏客户端，也没有YGOPRO的人机交互等功能，但有着相关的接口对接。
+| 组件 | 许可 |
+| :--- | :--- |
+| AI.Server（`skill/resources/ygopro2-bridge/server`） | GPLv3，许可证随附 |
+| YGOPro2 客户端（仅集成包，[YGOProUnity_V2](https://github.com/lllyasviel/YGOProUnity_V2)） | GPLv3，许可证随附 |
+| 卡片数据库、禁限表、卡片脚本 | 遵循各自上游项目的许可 |
 
-## 项目结构
+卡图不随包分发。
 
-```text
-lib/                  插件入口与 DSH 技能说明
-skill/backend/        工具、会话与引擎服务
-skill/resources/      卡库、脚本与 WASM 资源
-skill/references/     数据来源与研究规则
-skill/vendor/         随包提供的运行依赖
-```
+<div align="center">
 
-## 许可
+<br>
 
-[0BSD](./LICENSE)
+**觉得有用的话，点个 ⭐ 吧**
 
-卡片数据库、禁限表、卡片脚本及其他数据资源遵循各自上游项目的许可与分发条款。
+</div>

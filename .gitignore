@@ -34,3 +34,6 @@ id_ed25519*
 .vscode/
 Thumbs.db
 Desktop.ini
+
+# Bundled YGOPro2 client: added only by scripts/build-release.mjs integrated
+skill/resources/ygopro2-client/

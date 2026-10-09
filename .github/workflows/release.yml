@@ -17,16 +17,22 @@ jobs:
           node-version: 24
       - name: Install tested DSH runtime
         run: npm install --no-save --ignore-scripts --no-package-lock --include=dev @deepseek-ai/dsh-tools@0.1.7-rc.2 @deepseek-ai/dsh-skill@0.1.7-rc.2 @deepseek-ai/dsh-llm@0.1.7-rc.2 @deepseek-ai/dsh-agent-preset@0.1.7-rc.2
-      - name: Verify compatibility and deck learning
+      - name: Run tests
         run: npm test
-      - name: Build tarball
-        run: |
-          mkdir -p dist
-          npm pack --pack-destination ./dist
-      - name: Write checksums
-        run: cd dist && sha256sum *.tgz > SHA256SUMS.txt
-      - name: Upload tarball to release
+      - name: Read version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      # The integrated package needs a YGOPro2 client that is not in the
+      # repository; it is built locally with scripts/build-release.mjs and
+      # uploaded to the same release.
+      - name: Build external package
+        run: node scripts/build-release.mjs external
+      - name: Write checksum
+        run: cd dist && sha256sum "ygo-tools-for-dsh-${VERSION}-external.tgz" > "ygo-tools-for-dsh-${VERSION}-external.tgz.sha256"
+      - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          body_path: docs/release-1.3.0.md
-          files: dist/*
+          name: v${{ env.VERSION }}
+          body_path: docs/release-${{ env.VERSION }}.md
+          files: |
+            dist/ygo-tools-for-dsh-${{ env.VERSION }}-external.tgz
+            dist/ygo-tools-for-dsh-${{ env.VERSION }}-external.tgz.sha256

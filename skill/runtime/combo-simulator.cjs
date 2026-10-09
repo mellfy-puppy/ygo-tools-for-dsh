@@ -1030,8 +1030,9 @@ function extractCardsFromFieldQueryRaw(raw, length, location = null) {
       if ((flags & COMMON.QUERY_STATUS) !== 0) cursor += 4;
       if ((flags & COMMON.QUERY_LSCALE) !== 0) cursor += 4;
       if ((flags & COMMON.QUERY_RSCALE) !== 0) cursor += 4;
-      if ((flags & COMMON.QUERY_LINK) !== 0 && cursor + 4 <= offset + chunkLen) {
-        card.link_marker = view.getInt32(cursor, true) >>> 0;
+      // QUERY_LINK carries the link rating first, then the link marker bits.
+      if ((flags & COMMON.QUERY_LINK) !== 0 && cursor + 8 <= offset + chunkLen) {
+        card.link_marker = view.getInt32(cursor + 4, true) >>> 0;
       }
       if (card.code > 0) {
         if (location !== null) card.location = location;

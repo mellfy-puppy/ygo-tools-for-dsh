@@ -19,6 +19,11 @@ import {
   executeYgoPro2Action,
   getYgoPro2BridgeStatus,
   isYgoPro2DuelRunner,
+  bundledClientExecutable,
+  launchYgoPro2Client,
+  sendYgoPro2Chat,
+  syncBundledClientCardData,
+  waitForYgoPro2HostEvent,
 } from './ygopro2-duel.mjs';
 
 const CORE_MODULES = Object.freeze({
@@ -68,6 +73,10 @@ const CORE_TOOL_NAMES = Object.freeze([
   'parseComboArtifact',
   'buildComboAdaptationContext',
   'learnDeckSkill',
+  'hostYgoPro2Match',
+  'waitYgoPro2Event',
+  'sendYgoPro2Chat',
+  'closeYgoPro2Match',
 ]);
 const FILE_WRITE_TOOL_NAMES = Object.freeze(['saveReplayYrp', 'saveRouteFile']);
 const ALL_TOOL_NAMES = Object.freeze([...CORE_TOOL_NAMES, ...FILE_WRITE_TOOL_NAMES]);
@@ -131,8 +140,8 @@ export function createSourceAdapter(configInput = {}) {
         if (SESSION_MIGRATION_TOOL_NAMES.has(name)) await migrateLegacySession(preparedContext, config, moduleCache);
         let preparedInput = injectInputDefaults(name, input, config);
         if (name === 'resetGame') preparedInput = await migrateExplicitResetInput(preparedInput, config, moduleCache);
-        if (name === 'resetGame') resetExistingExternalRunner(preparedContext);
-        if (RUNNER_TOOL_NAMES.has(name)) {
+        if (name === 'resetGame' || name === 'hostYgoPro2Match') resetExistingExternalRunner(preparedContext);
+        if (RUNNER_TOOL_NAMES.has(name) || name === 'hostYgoPro2Match') {
           await ensurePreparedRunner(preparedContext, config, moduleCache, preparedInput);
         }
         if (name === 'resetGame') {
@@ -253,6 +262,21 @@ async function executeCoreTool(name, config, moduleCache, context, input) {
     }
     case 'getYgoPro2BridgeStatus':
       return getYgoPro2BridgeStatus(context);
+    case 'hostYgoPro2Match':
+      return hostYgoPro2Match(config, moduleCache, context, input);
+    case 'waitYgoPro2Event': {
+      const stateModule = await loadCoreModule(config, moduleCache, 'stateTools');
+      return waitForYgoPro2HostEvent(resolveRunner(context), input, stateModule.formatCurrentState, input.graveyardLimit);
+    }
+    case 'sendYgoPro2Chat':
+      return sendYgoPro2Chat(resolveRunner(context), input);
+    case 'closeYgoPro2Match': {
+      const runner = resolveRunner(context);
+      if (!isYgoPro2DuelRunner(runner)) return { ok: true, data: { closed: false, reason: 'No YGOPro2 match is running.' } };
+      const status = runner.getBridgeStatus();
+      resetExistingExternalRunner(context);
+      return { ok: true, data: { closed: true, terminalResult: status.terminalResult, room: status.room } };
+    }
     case 'refreshCardDataSources':
       if (!config.allowNetworkUpdate && input.allowNetworkUpdate !== true) {
         return {
@@ -459,6 +483,100 @@ async function resetYgoPro2Game(config, moduleCache, context, input) {
     return {
       ok: false,
       code: 'YGOPRO2_BRIDGE_START_FAILED',
+      error: error instanceof Error ? error.message : String(error),
+      data: { installation, externalPolicyClient },
+    };
+  }
+}
+
+// Opens a local room: a human YGOPro2 client joins by IP:port and the model
+// plays the other seat through the external-policy WindBot.
+async function hostYgoPro2Match(config, moduleCache, context, input) {
+  const session = requireSession(context, 'hostYgoPro2Match');
+  const enumerator = resolveRunner(context);
+  if (!enumerator || typeof enumerator.tryBuildDecisionFromMessage !== 'function') {
+    return { ok: false, code: 'YGOPRO2_ENUMERATOR_UNAVAILABLE', error: 'Unable to create the legal-action enumerator required by the YGOPro2 bridge.' };
+  }
+  // The server and card data come from the plugin. The client is the bundled
+  // one (integrated release) unless the caller names a YGOPro2 root; only the
+  // external release searches the machine for an installed YGOPro2.
+  const explicitRoot = readString(input.ygoPro2Root);
+  const bundledClient = explicitRoot ? null : await bundledClientExecutable();
+  const discovery = await discoverYgoPro2({
+    ...(explicitRoot ? { root: explicitRoot, scan: false } : {}),
+    ...(bundledClient ? { scan: false, standardLocations: false } : {}),
+    ...(readString(input.externalPolicyRoot) ? { externalPolicyRoot: input.externalPolicyRoot } : {}),
+  }, bundledClient ? {} : config.env ?? process.env);
+  session.mergeMetadata({ ygoPro2Discovery: discovery.data, ygoPro2DiscoveryUpdatedAt: discovery.data.recordedAt });
+  const installation = discovery.data.selected ?? null;
+  const clientExecutable = bundledClient ?? installation?.paths?.clientExecutable ?? null;
+  const externalPolicyClient = discovery.data.selectedExternalPolicyClient;
+  if (!externalPolicyClient?.verified) {
+    return {
+      ok: false,
+      code: 'YGOPRO2_BRIDGE_NOT_READY',
+      error: 'The bundled external-policy WindBot could not be verified.',
+      data: discovery.data,
+    };
+  }
+  const playerDeck = asDeck(input.deck) ?? readSessionDeck(session) ?? asDeck(enumerator.playerDeck);
+  if (!playerDeck) return { ok: false, code: 'YGOPRO2_PLAYER_DECK_REQUIRED', error: 'Hosting requires a deck argument or a loaded session deck.' };
+  try { enumerator.destroyDuel?.(); } catch { }
+  try {
+    const runner = await createYgoPro2DuelRunner({
+      mode: 'host',
+      enumerator,
+      playerDeck,
+      playerTurnOrder: readString(input.modelTurnOrder),
+      hostPort: input.port,
+      bindAddress: input.bindAddress,
+      botName: input.botName,
+      installation,
+      externalPolicyClient,
+      cardData: {
+        cardsDbPath: config.cardsDbPath,
+        scriptsDir: config.scriptsDir,
+        prereleaseReleaseDbPath: config.prereleaseReleaseDbPath,
+        prereleaseUpdateDbPath: config.prereleaseUpdateDbPath,
+        prereleaseScriptsDir: config.prereleaseScriptsDir,
+        lflistPath: resolve(config.resourceRoot, 'lib', 'lflist.conf'),
+      },
+      startupTimeoutMs: input.startupTimeoutMs,
+    });
+    session.runner = runner;
+    context.runner = runner;
+    if (input.launchClient !== false) {
+      try {
+        const synced = bundledClient ? await syncBundledClientCardData(bundledClient, runner.cardData) : [];
+        runner.clientLaunch = {
+          ...await launchYgoPro2Client(runner, clientExecutable),
+          clientSource: bundledClient ? 'bundled' : clientExecutable ? 'installed' : 'none',
+          ...(synced.length ? { syncedCardData: synced } : {}),
+        };
+      } catch (error) {
+        runner.clientLaunch = { launched: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    session.mergeMetadata({ duelBackend: runner.duelBackend, ygoPro2Bridge: runner.getBridgeStatus() });
+    return {
+      ok: true,
+      data: {
+        room: runner.getRoomInfo(),
+        clientLaunch: runner.clientLaunch,
+        deck: { main: playerDeck.main.length, extra: playerDeck.extra.length, side: playerDeck.side.length },
+        security: runner.bindAddress === '127.0.0.1'
+          ? 'Listening on loopback only; other machines cannot join.'
+          : `Listening on ${runner.bindAddress} without authentication; anyone who can reach this port can join the room.`,
+        next: 'Tell the user the room is open. If the result has a duelWatcher job, end the turn: the job finishes and wakes this session when the opponent starts the duel. Otherwise call manageYgoPro2 action:"wait" repeatedly. Act with executeAction only when event is "decision"; reply to chat with action:"chat".',
+        bridge: runner.getBridgeStatus(),
+      },
+    };
+  } catch (error) {
+    session.runner = null;
+    context.runner = null;
+    return {
+      ok: false,
+      code: 'YGOPRO2_HOST_START_FAILED',
       error: error instanceof Error ? error.message : String(error),
       data: { installation, externalPolicyClient },
     };
@@ -692,7 +810,9 @@ async function executeNamedExport(config, moduleCache, moduleKey, exportName, co
 }
 
 async function executeDataTool(name, config, moduleCache, input) {
-  const module = await loadCoreModule(config, moduleCache, 'dataTools');
+  const module = name === 'refreshCardDataSources'
+    ? await import(pathToFileURL(resolve(config.runtimeRoot, CORE_MODULES.dataTools)).href + '?refresh=' + Date.now())
+    : await loadCoreModule(config, moduleCache, 'dataTools');
   const fn = name === 'getBanlistContext' ? module.readBanlistContext : module[name];
   if (typeof fn !== 'function') {
     return { ok: false, code: 'MISSING_EXPORT', error: `Data tool export missing: ${name}` };

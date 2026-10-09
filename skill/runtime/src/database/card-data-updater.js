@@ -7,6 +7,7 @@ import { basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DEFAULT_CARDS_DB_PATH, openCardsDatabase } from './cards-db.js';
+import { pullMissingCardData, pullMissingScripts } from './incremental-download.js';
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(MODULE_DIR, '../..');
@@ -16,9 +17,9 @@ const { requireSkillDependency } = require('../vendor-require.cjs');
 export const DEFAULT_YGOPRO_DATA_DIR = resolve(SKILL_ROOT, '.cache/ygopro-data');
 export const DEFAULT_BUNDLED_DATA_DIR = resolve(SKILL_ROOT, 'resources/lib');
 export const DEFAULT_ENGINE_SCRIPTS_DIR = resolve(SKILL_ROOT, 'resources/lib/ygopro-scripts');
-export const DEFAULT_REMOTE_CARDS_CDB_URL = 'http://cdn01.moestart.com/koishipro/ygopro-database/zh-CN/cards.cdb';
-export const DEFAULT_REMOTE_LFLIST_URL = 'http://cdn01.moestart.com/koishipro/ygopro-database/zh-CN/lflist.conf';
-export const DEFAULT_REMOTE_STRINGS_URL = 'http://cdn01.moestart.com/koishipro/ygopro-database/zh-CN/strings.conf';
+export const DEFAULT_REMOTE_CARDS_CDB_URL = 'https://cdn01.moestart.com/koishipro/ygopro-database/zh-CN/cards.cdb';
+export const DEFAULT_REMOTE_LFLIST_URL = 'https://cdn01.moestart.com/koishipro/ygopro-database/zh-CN/lflist.conf';
+export const DEFAULT_REMOTE_STRINGS_URL = 'https://cdn01.moestart.com/koishipro/ygopro-database/zh-CN/strings.conf';
 export const DEFAULT_YGOPRO_SCRIPTS_ARCHIVE_URL = 'https://cdn01.moestart.com/koishipro/script-zip/script.zip';
 export const DEFAULT_YGOPRO_SCRIPTS_TREE_URL = 'https://api.github.com/repos/Smile-DK/ygopro-scripts/git/trees/master?recursive=1';
 export const DEFAULT_PRERELEASE_YPK_URL = 'https://cdn02.moecube.com:444/ygopro-super-pre/archive/ygopro-super-pre.ypk';
@@ -59,129 +60,7 @@ export function getYgoproDataPaths(options = {}) {
 }
 
 export async function refreshCardDataSources(options = {}) {
-  const paths = getYgoproDataPaths(options);
-  const startedAt = Date.now();
-  const dataDirExisted = await stat(paths.dataDir).then(() => true, () => false);
-  await mkdir(paths.dataDir, { recursive: true });
-  const stagingRoot = resolve(paths.dataDir, `staging-${process.pid}-${Date.now()}`);
-  const stagedDataDir = resolve(stagingRoot, 'lib');
-  const stagedScriptsDir = resolve(stagedDataDir, 'ygopro-scripts');
-  const stagedPrereleaseDir = resolve(stagedDataDir, 'prerelease');
-  const stagedPaths = {
-    ...paths,
-    dataDir: stagingRoot,
-    scriptsDir: stagedScriptsDir,
-    cardsPath: resolve(stagedDataDir, 'cards.cdb'),
-    lflistPath: resolve(stagedDataDir, 'lflist.conf'),
-    stringsPath: resolve(stagedDataDir, 'strings.conf'),
-    prereleaseDir: stagedPrereleaseDir,
-    prereleaseReleaseDbPath: resolve(stagedPrereleaseDir, 'test-release.cdb'),
-    prereleaseUpdateDbPath: resolve(stagedPrereleaseDir, 'test-update.cdb'),
-    prereleaseStringsPath: resolve(stagedPrereleaseDir, 'test-strings.conf'),
-    prereleaseScriptsDir: resolve(stagedPrereleaseDir, 'script'),
-    cardDbPaths: [resolve(stagedPrereleaseDir, 'test-update.cdb'), resolve(stagedPrereleaseDir, 'test-release.cdb'), resolve(stagedDataDir, 'cards.cdb')],
-    scriptDirs: [resolve(stagedPrereleaseDir, 'script'), stagedScriptsDir],
-  };
-  await mkdir(stagedDataDir, { recursive: true });
-
-  try {
-    reportRefreshProgress(options, startedAt, 'download-core', 'Downloading the Koishi database, banlist, strings, and matching complete script archive.');
-    const oldCards = await readLayeredCardIdentityIndex(paths).catch(() => []);
-    const [cardsDownload, lflistDownload, stringsDownload, scriptIndex, scriptArchiveBytes, prereleaseYpkBytes, prereleaseVersionBytes, prereleaseCatalogBytes] = await settleAllOrThrow([
-      downloadDataFile(readString(options.cardsUrl) ?? DEFAULT_REMOTE_CARDS_CDB_URL, stagedPaths.cardsPath, options),
-      downloadDataFile(readString(options.lflistUrl) ?? DEFAULT_REMOTE_LFLIST_URL, stagedPaths.lflistPath, options),
-      downloadDataFile(readString(options.stringsUrl) ?? DEFAULT_REMOTE_STRINGS_URL, stagedPaths.stringsPath, options),
-      loadOnlineCardScriptIndex(options),
-      downloadBytes(readString(options.scriptArchiveUrl) ?? DEFAULT_YGOPRO_SCRIPTS_ARCHIVE_URL, options),
-      downloadBytes(readString(options.prereleaseYpkUrl) ?? DEFAULT_PRERELEASE_YPK_URL, options),
-      downloadBytes(readString(options.prereleaseVersionUrl) ?? DEFAULT_PRERELEASE_VERSION_URL, options),
-      downloadBytes(readString(options.prereleaseCatalogUrl) ?? DEFAULT_PRERELEASE_CATALOG_URL, options),
-    ]);
-    const downloads = [cardsDownload, lflistDownload, stringsDownload];
-    reportRefreshProgress(options, startedAt, 'refresh-scripts', `Extracting and verifying the complete Koishi script revision ${scriptIndex.revision ?? 'unknown'}.`);
-    const [scripts, prerelease] = await settleAllOrThrow([
-      refreshOnlineCardScripts(stagedPaths, {
-        ...options,
-        scriptIndex,
-        archiveBytes: scriptArchiveBytes,
-      }),
-      installPrereleasePackage(stagedPaths, {
-        ypkBytes: prereleaseYpkBytes,
-        versionBytes: prereleaseVersionBytes,
-        catalogBytes: prereleaseCatalogBytes,
-        ypkUrl: readString(options.prereleaseYpkUrl) ?? DEFAULT_PRERELEASE_YPK_URL,
-      }),
-    ]);
-    downloads.push(scripts);
-    downloads.push(prerelease);
-    const newCards = await readLayeredCardIdentityIndex(stagedPaths);
-    const detectedMigrations = buildIdMigrations(oldCards, newCards);
-    const previousMigrations = await readExistingMigrations(resolve(dirname(paths.cardsPath), 'id-migrations.json'));
-    const idMigrations = mergeIdMigrations(previousMigrations, detectedMigrations);
-    const migrationPath = resolve(stagedDataDir, 'id-migrations.json');
-    await writeFile(migrationPath, `${JSON.stringify({ updatedAt: new Date().toISOString(), migrations: idMigrations }, null, 2)}\n`, 'utf8');
-    reportRefreshProgress(options, startedAt, 'verify-staged', 'Verifying staged data and starting the compatibility runner.');
-    const verification = await verifyUpdatedData(stagedPaths, { scripts, prerelease, idMigrations });
-    verification.engineCompatibility = await verifyEngineCompatibility(stagedPaths);
-    verification.ok = verification.ok && verification.engineCompatibility.ok;
-    if (!verification.ok) {
-      return { ok: false, code: 'CARD_DATA_VERIFICATION_FAILED', error: 'Staged online card data failed verification; active resources were not changed.', data: { paths, downloads, verification } };
-    }
-
-    reportRefreshProgress(options, startedAt, 'install', 'Installing verified resources.');
-    await installStagedResources(stagedPaths, paths, migrationPath, scripts);
-    const installedScripts = { ...scripts, path: paths.scriptsDir };
-    const installedPrerelease = { ...prerelease, path: paths.prereleaseDir };
-    const installedVerification = await verifyUpdatedData(paths, { scripts: installedScripts, prerelease: installedPrerelease, idMigrations });
-    installedVerification.engineCompatibility = verification.engineCompatibility;
-    installedVerification.ok = installedVerification.ok && verification.engineCompatibility.ok;
-  const manifest = {
-    updatedAt: new Date().toISOString(),
-    sources: {
-      cards: readString(options.cardsUrl) ?? DEFAULT_REMOTE_CARDS_CDB_URL,
-      lflist: readString(options.lflistUrl) ?? DEFAULT_REMOTE_LFLIST_URL,
-      strings: readString(options.stringsUrl) ?? DEFAULT_REMOTE_STRINGS_URL,
-      prerelease: {
-        ypk: readString(options.prereleaseYpkUrl) ?? DEFAULT_PRERELEASE_YPK_URL,
-        version: readString(options.prereleaseVersionUrl) ?? DEFAULT_PRERELEASE_VERSION_URL,
-        catalog: readString(options.prereleaseCatalogUrl) ?? DEFAULT_PRERELEASE_CATALOG_URL,
-      },
-      engineScripts: {
-        archive: readString(options.scriptArchiveUrl) ?? DEFAULT_YGOPRO_SCRIPTS_ARCHIVE_URL,
-        tree: readString(options.cardScriptsTreeUrl) ?? DEFAULT_YGOPRO_SCRIPTS_TREE_URL,
-        revision: scriptIndex.revision,
-      },
-    },
-    files: {
-      cards: await getDataFileStatus(paths.cardsPath),
-      lflist: await getDataFileStatus(paths.lflistPath),
-      strings: await getDataFileStatus(paths.stringsPath),
-      prereleaseRelease: await getDataFileStatus(paths.prereleaseReleaseDbPath),
-      prereleaseUpdate: await getDataFileStatus(paths.prereleaseUpdateDbPath),
-      prereleaseStrings: await getDataFileStatus(paths.prereleaseStringsPath),
-      prereleaseScriptsDir: await getDirectoryStatus(paths.prereleaseScriptsDir),
-      engineScriptsDir: await getDirectoryStatus(paths.scriptsDir),
-    },
-    scripts: installedScripts,
-    prerelease: installedPrerelease,
-    idMigrations,
-    verification: installedVerification,
-  };
-  reportRefreshProgress(options, startedAt, 'complete', 'Card data refresh completed.');
-
-  return {
-    ok: installedVerification.ok,
-    data: {
-      paths,
-      downloads,
-      manifest,
-      elapsedMs: Date.now() - startedAt,
-    },
-  };
-  } finally {
-    await rm(stagingRoot, { recursive: true, force: true }).catch(() => {});
-    if (!dataDirExisted) await rmdir(paths.dataDir).catch(() => {});
-  }
+  return pullMissingCardData(getYgoproDataPaths(options), options);
 }
 
 async function settleAllOrThrow(promises) {
@@ -194,92 +73,49 @@ async function settleAllOrThrow(promises) {
 export async function refreshEngineCardScripts(pathsOrOptions = {}, maybeOptions = {}) {
   const paths = pathsOrOptions?.cardsPath ? pathsOrOptions : getYgoproDataPaths(pathsOrOptions);
   const options = pathsOrOptions?.cardsPath ? maybeOptions : pathsOrOptions;
-  const [scriptIndex, archiveBytes] = await Promise.all([
-    options.scriptIndex ?? loadOnlineCardScriptIndex(options),
-    options.archiveBytes ?? downloadBytes(readString(options.scriptArchiveUrl) ?? DEFAULT_YGOPRO_SCRIPTS_ARCHIVE_URL, options),
-  ]);
-  return refreshOnlineCardScripts(paths, { ...options, scriptIndex, archiveBytes });
-}
-
-async function loadOnlineCardScriptIndex(options) {
-  const source = readString(options.cardScriptsTreeUrl) ?? DEFAULT_YGOPRO_SCRIPTS_TREE_URL;
-  const tree = await fetchJson(source, options);
-  if (tree?.truncated === true) throw new Error('Smile-DK/ygopro-scripts tree response was truncated.');
-  const files = new Map();
-  for (const entry of Array.isArray(tree?.tree) ? tree.tree : []) {
-    const path = readString(entry?.path);
-    const sha = readString(entry?.sha);
-    if (!path || !sha || !isAllowedYgoproScriptPath(path)) continue;
-    files.set(path, { path, sha });
-  }
-  if (files.size === 0) throw new Error('Smile-DK/ygopro-scripts returned no engine scripts.');
-  for (const fileName of REQUIRED_ENGINE_SUPPORT_SCRIPTS) {
-    if (!files.has(fileName)) throw new Error(`Smile-DK/ygopro-scripts is missing ${fileName}.`);
-  }
-  return {
-    source,
-    revision: readString(tree?.sha),
-    truncated: false,
-    files,
-  };
+  return pullMissingScripts(paths, options);
 }
 
 async function refreshOnlineCardScripts(paths, options) {
-  const scriptIndex = options.scriptIndex;
-  if (!(scriptIndex?.files instanceof Map) || scriptIndex.files.size === 0) {
-    throw new Error('A complete Smile-DK/ygopro-scripts tree index is required.');
-  }
   const JSZip = requireSkillDependency('jszip');
   const archive = await JSZip.loadAsync(options.archiveBytes);
+  for (const entry of Object.values(archive.files)) {
+    const original = String(entry.unsafeOriginalName ?? entry.name).replace(/\\/g, '/');
+    if (original.startsWith('/') || original.split('/').includes('..')) throw new Error(`Unsafe Koishi script archive path: ${original}`);
+  }
   const archiveFiles = Object.values(archive.files)
     .filter((entry) => !entry.dir && isAllowedYgoproScriptPath(entry.name));
   const archiveNames = new Set(archiveFiles.map((entry) => entry.name));
-  const expectedNames = new Set(scriptIndex.files.keys());
-  const missing = [...expectedNames].filter((path) => !archiveNames.has(path));
-  const unexpected = [...archiveNames].filter((path) => !expectedNames.has(path));
-  if (missing.length > 0 || unexpected.length > 0) {
-    throw new Error(`Koishi script archive/tree mismatch: missing=${missing.length}, unexpected=${unexpected.length}.`);
+  for (const name of REQUIRED_ENGINE_SUPPORT_SCRIPTS) {
+    if (!archiveNames.has(name)) throw new Error(`Official script archive is missing ${name}.`);
   }
 
   const concurrency = normalizeConcurrency(options.scriptConcurrency, DEFAULT_SCRIPT_DOWNLOAD_CONCURRENCY);
-  const validated = await mapWithConcurrency([...scriptIndex.files.values()], concurrency, async (expected) => {
-    const entry = archive.file(expected.path);
-    if (!entry) throw new Error(`Koishi script archive is missing ${expected.path}.`);
+  const extracted = await mapWithConcurrency(archiveFiles, concurrency, async (entry) => {
     const bytes = await entry.async('nodebuffer');
-    const actualBlobSha = gitBlobSha(bytes);
-    if (actualBlobSha !== expected.sha) {
-      throw new Error(`Koishi script archive contains a different revision of ${expected.path}.`);
-    }
-    return { expected, bytes, actualBlobSha };
+    return { path: entry.name, bytes };
   });
 
   const extractionDir = resolve(dirname(paths.scriptsDir), `.${basename(paths.scriptsDir)}-staging-${process.pid}-${Date.now()}`);
   await rm(extractionDir, { recursive: true, force: true });
   await mkdir(extractionDir, { recursive: true });
-  const results = await mapWithConcurrency(validated, concurrency, async ({ expected, bytes, actualBlobSha }) => {
-    const targetPath = resolveSafeScriptPath(extractionDir, expected.path);
+  const results = await mapWithConcurrency(extracted, concurrency, async ({ path, bytes }) => {
+    const targetPath = resolveSafeScriptPath(extractionDir, path);
     await mkdir(dirname(targetPath), { recursive: true });
     await writeFile(targetPath, bytes);
-    return { path: expected.path, bytes: bytes.length, sha256: sha256(bytes), gitBlobSha: actualBlobSha };
+    return { path, bytes: bytes.length };
   });
   await replaceDirectoryAtomically(extractionDir, paths.scriptsDir);
   const cardScriptCount = results.filter((result) => /^c\d+\.lua$/.test(result.path)).length;
   return {
     ok: true,
-    mode: 'complete-verified-archive',
+    mode: 'official-archive',
     url: readString(options.scriptArchiveUrl) ?? DEFAULT_YGOPRO_SCRIPTS_ARCHIVE_URL,
-    sourceIndex: {
-      source: scriptIndex.source,
-      revision: scriptIndex.revision,
-      truncated: scriptIndex.truncated,
-      files: scriptIndex.files.size,
-    },
     count: results.length,
     cardScriptCount,
-    missing,
-    unexpected,
+    missing: [],
     archiveSha256: sha256(options.archiveBytes),
-    verifiedFileSamples: results.slice(0, 10).map((result) => result.path),
+    extractedFileSamples: results.slice(0, 10).map((result) => result.path),
     staging: { mode: 'complete', files: results.length },
     path: paths.scriptsDir,
   };
@@ -330,17 +166,15 @@ async function installPrereleasePackage(paths, options) {
   const scriptNames = new Set(extracted.filter((item) => item.name.startsWith('script/')).map((item) => basename(item.name)));
   const catalogComparison = comparePrereleaseCatalog(releaseCards, releaseRuntime, catalog, scriptNames);
   const { releaseById, catalogById, missingFromCatalog, nameMismatches, pendingCatalogCards } = catalogComparison;
-  if (missingFromCatalog.length > 0 || nameMismatches.length > 0) {
-    throw new Error(`Official prerelease CDB/catalog mismatch: missingFromCatalog=${missingFromCatalog.length}, nameMismatches=${nameMismatches.length}.`);
-  }
+  // The catalog owns display names. Publication skew must not block a database update.
+  const catalogNameUpdates = await applyCatalogNames(
+    [paths.prereleaseReleaseDbPath, paths.prereleaseUpdateDbPath], catalogById,
+  );
 
   const missingReleaseScripts = releaseRuntime
     .filter(cardRequiresScript)
     .filter((card) => !scriptNames.has(`c${card.id}.lua`) && !(card.alias > 0 && scriptNames.has(`c${card.alias}.lua`)))
     .map((card) => card.id);
-  if (missingReleaseScripts.length > 0) {
-    throw new Error(`Official prerelease YPK is missing ${missingReleaseScripts.length} required prerelease card scripts.`);
-  }
 
   return {
     ok: true,
@@ -354,8 +188,13 @@ async function installPrereleasePackage(paths, options) {
     tokenCount: releaseCards.length - releaseById.size,
     updateCardCount: updateCards.length,
     catalogCardCount: catalogById.size,
-    catalogMatched: pendingCatalogCards.length === 0,
-    catalogCoversRelease: true,
+    catalogMatched: pendingCatalogCards.length === 0 && missingFromCatalog.length === 0 && nameMismatches.length === 0,
+    catalogCoversRelease: missingFromCatalog.length === 0,
+    catalogNameAuthority: 'official-catalog',
+    catalogNameUpdates,
+    missingFromCatalog,
+    nameMismatches,
+    missingReleaseScripts,
     pendingCatalogCardCount: pendingCatalogCards.length,
     pendingCatalogCards,
     scriptCount: scriptNames.size,
@@ -381,7 +220,7 @@ export function comparePrereleaseCatalog(releaseCards, releaseRuntime, catalog, 
   const missingFromCatalog = [...releaseById.keys()].filter((id) => !catalogById.has(id));
   const nameMismatches = [...releaseById].filter(([id, card]) => {
     const catalogCard = catalogById.get(id);
-    return normalizeCardQuery(card.name) !== normalizeCardQuery(catalogCard?.name);
+    return catalogCard && card.name !== catalogCard.name;
   }).map(([id, card]) => ({ id, cdbName: card.name, catalogName: catalogById.get(id)?.name }));
   const pendingCatalogCards = [...catalogById.values()]
     .filter((card) => !releaseById.has(card.id))
@@ -401,6 +240,30 @@ export function comparePrereleaseCatalog(releaseCards, releaseRuntime, catalog, 
     nameMismatches,
     pendingCatalogCards,
   };
+}
+
+async function applyCatalogNames(databasePaths, catalogById) {
+  const initSqlJs = requireSkillDependency('sql.js');
+  const SQL = await initSqlJs();
+  const updates = [];
+  for (const path of databasePaths) {
+    const db = new SQL.Database(await readFile(path));
+    try {
+      const rows = db.exec('SELECT id, name FROM texts')[0]?.values ?? [];
+      let changed = false;
+      for (const [id, name] of rows) {
+        const catalog = catalogById.get(Number(id));
+        if (!catalog || String(name) === catalog.name) continue;
+        db.run('UPDATE texts SET name = ? WHERE id = ?', [catalog.name, Number(id)]);
+        updates.push({ database: basename(path), id: Number(id), previousName: String(name), name: catalog.name });
+        changed = true;
+      }
+      if (changed) await writeFile(path, db.export());
+    } finally {
+      db.close();
+    }
+  }
+  return updates;
 }
 
 function resolveSafePrereleasePath(rootDir, relativePath) {
@@ -577,106 +440,6 @@ async function installStagedResources(staged, active, migrationPath, scripts) {
     throw error;
   }
   await rm(backupDir, { recursive: true, force: true });
-}
-
-async function verifyEngineCompatibility(paths) {
-  try {
-    const runnerModule = await import('../runner/factory.js');
-    const stateTools = await import('../tools/state-tools.js');
-    const runtimeCards = await readLayeredCardRuntimeIndex(paths);
-    const prereleaseCards = await readCardRuntimeIndex(paths.prereleaseReleaseDbPath);
-    const availableScripts = await readLayeredScriptNames(paths);
-    const executable = (card) => !cardRequiresScript(card)
-      || availableScripts.has(`c${card.id}.lua`)
-      || (card.alias > 0 && availableScripts.has(`c${card.alias}.lua`));
-    const prereleaseMain = selectRepresentativeCards(prereleaseCards.filter(isMainDeckCard).filter(executable), 20);
-    const prereleaseExtra = selectRepresentativeCards(prereleaseCards.filter(isExtraDeckCard).filter(executable), 15);
-    const selectedPrereleaseIds = new Set([...prereleaseMain, ...prereleaseExtra].map((card) => card.id));
-    const baseMain = runtimeCards
-      .filter(isMainDeckCard)
-      .filter(executable)
-      .filter((card) => !selectedPrereleaseIds.has(card.id))
-      .sort((left, right) => left.id - right.id);
-    const main = [...prereleaseMain, ...baseMain].map((card) => card.id).slice(0, 40);
-    if (main.length < 40) throw new Error(`Only ${main.length} main-deck engine probe cards were available.`);
-    const extra = prereleaseExtra.map((card) => card.id);
-    const opening = main.slice(0, Math.min(5, main.length));
-    const remain = main.slice(5);
-    const runner = await runnerModule.createRealRunner({
-      cardsDb: paths.cardsPath,
-      cardsDbs: paths.cardDbPaths,
-      scriptDirs: paths.scriptDirs,
-      playerDeck: { main, extra, side: [] },
-      playerOpening: { opening, remain },
-      seed: 1,
-      drawCount: opening.length,
-      quiet: true,
-    });
-    const listed = stateTools.listActions(runner);
-    if (!listed.ok) throw new Error(listed.error);
-    const diagnostics = listed.data.engineDiagnostics ?? [];
-    if (diagnostics.length > 0) throw new Error(`Engine emitted ${diagnostics.length} script diagnostic messages.`);
-    if (!Array.isArray(listed.data.actions) || listed.data.actions.length === 0) {
-      throw new Error('Engine probe produced no legal opening actions.');
-    }
-    return {
-      ok: Boolean(runner),
-      probeCardCount: main.length,
-      probeIds: main,
-      prereleaseProbe: {
-        availableMainDeckCards: prereleaseCards.filter(isMainDeckCard).length,
-        availableExtraDeckCards: prereleaseCards.filter(isExtraDeckCard).length,
-        selectedMainDeckIds: prereleaseMain.map((card) => card.id),
-        selectedExtraDeckIds: prereleaseExtra.map((card) => card.id),
-      },
-      openingActionCount: listed.data.actions.length,
-      engineDiagnostics: diagnostics,
-    };
-  } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
-  }
-}
-
-function isMainDeckCard(card) {
-  const type = Number(card?.type ?? 0);
-  return (type & 0x4000) === 0
-    && !isExtraDeckCard(card)
-    && (type & (0x1 | 0x2 | 0x4)) !== 0;
-}
-
-function isExtraDeckCard(card) {
-  const type = Number(card?.type ?? 0);
-  return (type & (0x40 | 0x2000 | 0x800000 | 0x4000000)) !== 0;
-}
-
-function selectRepresentativeCards(cards, limit) {
-  const groups = new Map();
-  for (const card of cards.slice().sort((left, right) => left.id - right.id)) {
-    const key = cardTypeGroup(card);
-    const group = groups.get(key) ?? [];
-    group.push(card);
-    groups.set(key, group);
-  }
-  const selected = [];
-  while (selected.length < limit && [...groups.values()].some((group) => group.length > 0)) {
-    for (const group of groups.values()) {
-      if (selected.length >= limit) break;
-      const card = group.shift();
-      if (card) selected.push(card);
-    }
-  }
-  return selected;
-}
-
-function cardTypeGroup(card) {
-  const type = Number(card?.type ?? 0);
-  if ((type & 0x40) !== 0) return 'fusion';
-  if ((type & 0x2000) !== 0) return 'synchro';
-  if ((type & 0x800000) !== 0) return 'xyz';
-  if ((type & 0x4000000) !== 0) return 'link';
-  if ((type & 0x2) !== 0) return 'spell';
-  if ((type & 0x4) !== 0) return 'trap';
-  return 'monster';
 }
 
 export async function inspectCardDataSources(options = {}) {
@@ -873,10 +636,10 @@ async function verifyUpdatedData(paths, online = {}) {
     missingCount: null,
     missing: [],
   }));
-  const scriptsOk = !online.scripts || (online.scripts.ok === true && online.scripts.missing?.length === 0);
+  const scriptsOk = !online.scripts || online.scripts.ok === true;
   const prereleaseOk = !online.prerelease || online.prerelease.ok === true;
   return {
-    ok: cardsOk && banlistOk && scriptsOk && prereleaseOk && scriptCoverage.ok,
+    ok: cardsOk && banlistOk && scriptsOk && prereleaseOk,
     cardsDatabaseReadable: cardsOk,
     cardsDatabaseError: cardsError,
     databaseCardCount,
@@ -886,6 +649,7 @@ async function verifyUpdatedData(paths, online = {}) {
     onlineScripts: online.scripts ?? null,
     onlinePrerelease: online.prerelease ?? null,
     databaseScriptCoverage: scriptCoverage,
+    scriptCoverageBlocksUpdate: false,
     idMigrations: online.idMigrations ?? [],
     expectedChecks: {
       banlistReadable: banlistOk,
@@ -935,10 +699,6 @@ async function readLayeredScriptNames(paths) {
     }
   }
   return names;
-}
-
-async function fetchJson(url, options) {
-  return fetchWithRetry(url, options, (response) => response.json());
 }
 
 async function downloadDataFile(url, targetPath, options) {
@@ -1185,11 +945,6 @@ function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-function gitBlobSha(bytes) {
-  const header = Buffer.from(`blob ${bytes.length}\0`, 'utf8');
-  return createHash('sha1').update(header).update(bytes).digest('hex');
-}
-
 function normalizeTimeout(value) {
   const timeout = Math.trunc(Number(value ?? DEFAULT_TIMEOUT_MS));
   return Number.isFinite(timeout) && timeout > 0 ? timeout : DEFAULT_TIMEOUT_MS;
@@ -1228,6 +983,11 @@ function reportRefreshProgress(options, startedAt, phase, message) {
 function readPositiveInteger(value) {
   const number = Math.trunc(Number(value));
   return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function normalizeCardIdList(value) {
+  const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return [...new Set(values.map(readPositiveInteger).filter((id) => id !== null))];
 }
 
 function readString(value) {

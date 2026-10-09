@@ -754,13 +754,13 @@ export const searchCardsTool = {
 
 export const refreshCardDataSourcesTool = {
   name: 'refreshCardDataSources',
-  description: 'When explicitly requested by the user, download the current official formal and MyCard prerelease resources, validate the complete downloaded card/script sets, run a dynamically selected engine probe, and atomically install the update.',
+  description: 'Fetch official online catalogs and add locally absent card records, Lua scripts and data entries. Existing cards and scripts remain installed; complete databases and packages are not downloaded.',
   input_schema: {
     type: 'object',
     properties: {
       force: {
         type: 'boolean',
-        description: 'Accepted for compatibility; the updater always verifies the remote files when called.',
+        description: 'Compatibility field; only missing resources are added regardless of this value.',
       },
       allowNetworkUpdate: {
         type: 'boolean',

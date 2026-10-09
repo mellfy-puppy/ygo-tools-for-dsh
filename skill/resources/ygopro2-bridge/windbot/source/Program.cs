@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Threading;
 using System.Net;
@@ -66,6 +66,12 @@ namespace WindBot
                 System.Environment.Exit(1);
             }
             NamedCardsManager.Init(absolutePath);
+            // ExtraDbPaths=a.cdb;b.cdb adds prerelease or expansion cards on top of DbPath.
+            foreach (string extra in Config.GetString("ExtraDbPaths", "").Split(';'))
+            {
+                if (extra.Trim().Length > 0)
+                    NamedCardsManager.LoadExtra(Path.GetFullPath(extra.Trim()));
+            }
         }
 
         private static void RunFromArgs()

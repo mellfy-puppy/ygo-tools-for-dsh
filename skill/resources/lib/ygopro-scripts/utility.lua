@@ -578,6 +578,9 @@ function Auxiliary.IsCounterAdded(c,counter)
 	end
 	return false
 end
+function Auxiliary.HasMentionedCounter(c,counter)
+	return c.mentioned_counter and c.mentioned_counter[counter] or false
+end
 function Auxiliary.IsTypeInText(c,type)
 	return c.has_text_type and type&c.has_text_type==type
 end
@@ -1782,15 +1785,17 @@ function Auxiliary.RegisterMergedDelayedEvent_ToSingleCard_AddOperation(c,g,even
 	e1:SetType(EFFECT_TYPE_FIELD+EFFECT_TYPE_CONTINUOUS)
 	e1:SetCode(event)
 	e1:SetProperty(EFFECT_FLAG_CANNOT_DISABLE+EFFECT_FLAG_SET_AVAILABLE)
-	e1:SetRange(0xff)
 	e1:SetLabel(event_code_single,event)
 	e1:SetLabelObject(g)
 	e1:SetOperation(Auxiliary.MergedDelayEventCheck1_ToSingleCard)
-	c:RegisterEffect(e1)
+	-- Card-registered FIELD continuous effects fail is_activateable while the handler is Set.
+	-- Duel.RegisterEffect is FIELD_ONLY, so Check1 still merges when this card is face-down,
+	-- which is required for cteffect. EVENT_MOVE still clears g if this copy becomes public.
+	Duel.RegisterEffect(e1,0)
 	local e2=e1:Clone()
 	e2:SetCode(EVENT_CHAIN_END)
 	e2:SetOperation(Auxiliary.MergedDelayEventCheck2_ToSingleCard)
-	c:RegisterEffect(e2)
+	Duel.RegisterEffect(e2,0)
 end
 function Auxiliary.ThisCardMovedToPublicResetCheck_ToSingleCard(e,tp,eg,ep,ev,re,r,rp)
 	local c=e:GetOwner()
@@ -2020,10 +2025,17 @@ end
 function Auxiliary.GoldenAllureQueenFilter(c)
 	return c:IsOriginalSetCard(0x3)
 end
+---無垢なる芸術－「黄昏の変幻」
+---@param c Card
+---@return boolean
+function Auxiliary.ArsMagnaFilter(c)
+	return c:IsOriginalSetCard(0x1e6)
+end
 --The table of all "become quick effects"
 Auxiliary.quick_effect_filter={}
 Auxiliary.quick_effect_filter[90351981]=Auxiliary.OrcustratedBabelFilter
 Auxiliary.quick_effect_filter[95937545]=Auxiliary.GoldenAllureQueenFilter
+Auxiliary.quick_effect_filter[37279096]=Auxiliary.ArsMagnaFilter
 ---Check if the effect of c becomes a Quick Effect.
 ---@param c Card
 ---@param tp integer
@@ -2102,4 +2114,12 @@ function Auxiliary.MulcharmyGlobalCheck(e,tp,eg,ep,ev,re,r,rp)
 	if re:IsActiveType(TYPE_MONSTER) and re:GetHandler():IsSetCard(0x1b2) then
 		Duel.RegisterFlagEffect(ep,84192580,RESET_PHASE+PHASE_END,0,1)
 	end
+end
+---Check whether a monster is special summoned by Tiki Peace, which should not calculate its original value after leaving the field
+---@param c Card
+---@return boolean
+function Auxiliary.covcheck(c)
+	if c:GetOriginalType()&TYPE_MONSTER~=0 then return true end
+	local se=c:GetSpecialSummonInfo(SUMMON_INFO_REASON_EFFECT)
+	return se and se:GetHandler()==c
 end

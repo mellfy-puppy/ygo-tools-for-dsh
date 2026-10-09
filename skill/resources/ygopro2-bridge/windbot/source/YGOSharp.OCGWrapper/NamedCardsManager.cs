@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Data;
 using Mono.Data.Sqlite;
 using System;
@@ -21,29 +21,41 @@ namespace YGOSharp.OCGWrapper
                 }
 
                 _cards = new Dictionary<int, NamedCard>();
-
-                using (SqliteConnection connection = new SqliteConnection("Data Source=" + databaseFullPath))
-                {
-                    connection.Open();
-
-                    using (IDbCommand command = new SqliteCommand(
-                        "SELECT datas.id, ot, alias, setcode, type, level, race, attribute, atk, def, texts.name, texts.desc"
-                        + " FROM datas INNER JOIN texts ON datas.id = texts.id",
-                        connection))
-                    {
-                        using (IDataReader reader = command.ExecuteReader())
-                        {
-                            while (reader.Read())
-                            {
-                                LoadCard(reader);
-                            }
-                        }
-                    }
-                }
+                LoadDatabase(databaseFullPath);
             }
             catch (Exception ex)
             {
                 throw new Exception("Could not initialize the cards database. Check the inner exception for more details.", ex);
+            }
+        }
+
+        // Adds cards from another database (for example prerelease cards); later databases override earlier ones.
+        public static void LoadExtra(string databaseFullPath)
+        {
+            if (_cards == null || !File.Exists(databaseFullPath))
+                return;
+            LoadDatabase(databaseFullPath);
+        }
+
+        private static void LoadDatabase(string databaseFullPath)
+        {
+            using (SqliteConnection connection = new SqliteConnection("Data Source=" + databaseFullPath))
+            {
+                connection.Open();
+
+                using (IDbCommand command = new SqliteCommand(
+                    "SELECT datas.id, ot, alias, setcode, type, level, race, attribute, atk, def, texts.name, texts.desc"
+                    + " FROM datas INNER JOIN texts ON datas.id = texts.id",
+                    connection))
+                {
+                    using (IDataReader reader = command.ExecuteReader())
+                    {
+                        while (reader.Read())
+                        {
+                            LoadCard(reader);
+                        }
+                    }
+                }
             }
         }
 
@@ -62,7 +74,7 @@ namespace YGOSharp.OCGWrapper
         private static void LoadCard(IDataRecord reader)
         {
             NamedCard card = new NamedCard(reader);
-            _cards.Add(card.Id, card);
+            _cards[card.Id] = card;
         }
     }
 }
