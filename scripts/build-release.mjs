@@ -111,13 +111,25 @@ async function stageClient(source, target, libDir) {
   await cp(join(libDir, 'lflist.conf'), join(target, 'config', 'lflist.conf'));
 
   const configPath = join(target, 'config', 'config.conf');
+  let playerName = '';
   if (await exists(configPath)) {
-    const config = (await readFile(configPath, 'utf8'))
+    const original = await readFile(configPath, 'utf8');
+    playerName = /^name->(.*)$/m.exec(original)?.[1]?.trim() ?? '';
+    const config = original
       .replace(/^name->.*$/m, 'name->Player')
       .replace(/^deckInUse->.*$/m, 'deckInUse->');
     await writeFile(configPath, config, 'utf8');
   }
   await writeFile(join(target, 'config', 'hosts.conf'), '', 'utf8');
+  // Unity also saves the last typed nickname inside its asset files. Replace
+  // it with a same-length placeholder so the serialized layout is unchanged,
+  // then refuse to finish if any copy is left.
+  if (playerName && playerName !== 'Player') {
+    const replaced = await scrubText(target, playerName);
+    if (replaced > 0) console.log(`Removed ${replaced} saved copies of the player name from the client.`);
+    const left = await findText(target, playerName);
+    if (left.length > 0) throw new Error(`Player name is still present in: ${left.join(', ')}`);
+  }
   await writeFile(join(target, 'NOTICE.md'), [
     '# Bundled YGOPro2 client',
     '',
@@ -130,6 +142,54 @@ async function stageClient(source, target, libDir) {
     'from the plugin and refreshed when the plugin opens a room.',
     '',
   ].join('\n'), 'utf8');
+}
+
+// Same-length placeholders for UTF-8 and UTF-16LE copies of `text`.
+function textVariants(text) {
+  return ['utf8', 'utf16le'].map((encoding) => {
+    const needle = Buffer.from(text, encoding);
+    const unit = encoding === 'utf8' ? 1 : 2;
+    // "Player" padded with spaces; ASCII stays valid at any even/odd cut point.
+    const chars = Math.floor(needle.length / unit);
+    const filler = Buffer.from('Player'.padEnd(chars, ' ').slice(0, chars), encoding);
+    return { needle, filler: Buffer.concat([filler, Buffer.alloc(needle.length - filler.length, 0x20)]) };
+  });
+}
+
+async function* walkFiles(dir) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) yield* walkFiles(path);
+    else if (entry.isFile()) yield path;
+  }
+}
+
+async function scrubText(dir, text) {
+  const variants = textVariants(text);
+  let count = 0;
+  for await (const path of walkFiles(dir)) {
+    const bytes = await readFile(path);
+    let changed = false;
+    for (const { needle, filler } of variants) {
+      for (let at = bytes.indexOf(needle); at >= 0; at = bytes.indexOf(needle, at + needle.length)) {
+        filler.copy(bytes, at);
+        count += 1;
+        changed = true;
+      }
+    }
+    if (changed) await writeFile(path, bytes);
+  }
+  return count;
+}
+
+async function findText(dir, text) {
+  const variants = textVariants(text);
+  const hits = [];
+  for await (const path of walkFiles(dir)) {
+    const bytes = await readFile(path);
+    if (variants.some(({ needle }) => bytes.includes(needle))) hits.push(relative(dir, path));
+  }
+  return hits;
 }
 
 async function exists(path) {
