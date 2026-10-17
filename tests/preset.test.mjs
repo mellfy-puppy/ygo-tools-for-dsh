@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { loadOverlayPatches, evaluatePluginCompatibility } from '@deepseek-ai/dsh-app-boot';
 
@@ -25,7 +26,23 @@ test('bundle supplies the game preset to current DSH composition', () => {
   assert.equal(new Set(plugins.map(row => row.id)).size, plugins.length);
 });
 
-test('declared compatibility admits installed rc.2 and rejects old runtime', () => {
-  assert.equal(evaluatePluginCompatibility(manifest, {}, '0.1.7-rc.2'), undefined);
-  assert.ok(evaluatePluginCompatibility(manifest, {}, '0.1.0-rc.6'));
+test('declared compatibility admits DSH 0.2 and rejects 0.1 and 0.3 runtimes', () => {
+  assert.equal(evaluatePluginCompatibility(manifest, {}, '0.2.1-rc.1'), undefined);
+  assert.equal(evaluatePluginCompatibility(manifest, {}, '0.2.1'), undefined);
+  assert.ok(evaluatePluginCompatibility(manifest, {}, '0.1.7-rc.2'));
+  assert.ok(evaluatePluginCompatibility(manifest, {}, '0.3.0'));
+});
+
+test('every DSH plugin in the preset resolves in the installed runtime', () => {
+  const require = createRequire(import.meta.resolve('@deepseek-ai/dsh-app-boot'));
+  const missing = [];
+  const visit = (rows) => {
+    for (const row of rows) {
+      if (row.name === 'cordis:group') { visit(row.config); continue; }
+      if (!row.name.startsWith('@deepseek-ai/')) continue;
+      try { require.resolve(row.name); } catch { missing.push(row.name); }
+    }
+  };
+  visit(loadOverlayPatches('ygo-test', patchPath)[0].insert[0].config.plugins);
+  assert.deepEqual(missing, []);
 });

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.0 — 2026-10-17
+
+### 适配 DSH 0.2.x
+
+适配 DeepSeek Harness 0.2.x（已在 0.2.1-rc.1 和 0.2.1-rc.2 桌面版上验证）。工具、卡库和对局功能与 1.4.0 相同。
+
+- 兼容范围：`peerDependencies` 改为 `>=0.2.1-rc.1 <0.3.0`。0.2 会拒绝 1.4.0 声明的 `<0.2.0`；DSH 0.1.x 请继续使用 1.4.0。
+- 游戏王模式预设按 0.2.1 标准组合对齐：新增 `time-context`、`tool-schedule`，以及默认关闭的 `tool-plugin-market`；移除 0.2 标准组合已不再配置的子代理 `backgroundMode`、codex / claude-code 子代理和 ralph；工作目录改由 DSH 自带的工作目录插件提供，删去 persona 里的 `{{cwd}}` 后缀；plan mode 提示与 0.2.1 一致。
+- 开房后的后台等待任务：`owner` 改为会话 id。0.2 用会话 id 查找对应的 Agent，原来传的是 Agent id。
+- 测试：新增预设插件在当前 DSH 中都能解析的检查，以及兼容范围、后台任务 owner 的测试。
+
 ## 1.4.0 — 2026-10-09
 
 ### 修复：连接怪兽的箭头与指向格子

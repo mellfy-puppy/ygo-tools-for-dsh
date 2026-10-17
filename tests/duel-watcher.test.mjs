@@ -38,6 +38,13 @@ test('watcher keeps waiting until the duel starts, then completes with instructi
   assert.deepEqual(job.progress, ['waiting for opponent', 'opponent in room, not started']);
 });
 
+test('watcher owner is the agent session id that DSH 0.2 resolves to a live agent', () => {
+  const jobs = fakeJobs();
+  startDuelWatcher(jobs, engineWith([waiting]), { agent: { id: 'agent-1', session: { id: 'session-1' } } }, 'dsh-1', 5);
+  assert.equal(jobs.started[0].spec.owner, 'session-1');
+  jobs.started[0].hooks.cancel();
+});
+
 test('watcher settles when the room closes or errors, and can be cancelled', async () => {
   const closed = fakeJobs();
   startDuelWatcher(closed, engineWith([{ running: false }]), {}, 'dsh-1', 5);

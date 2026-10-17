@@ -6,7 +6,7 @@ DeepSeek Harness 的游戏王插件：查卡、卡组分析、Combo 推演、录
 
 [![Release](https://img.shields.io/github/v/release/mellfy-puppy/ygo-tools-for-dsh)](https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/latest)
 [![License](https://img.shields.io/badge/license-0BSD-green)](./LICENSE)
-![DSH](https://img.shields.io/badge/DSH-0.1.7--rc.2-blue)
+![DSH](https://img.shields.io/badge/DSH-0.2.x-blue)
 ![Node](https://img.shields.io/badge/node-%3E%3D22-339933)
 
 </div>
@@ -22,19 +22,21 @@ Release 提供两个安装包，插件代码相同：
 | `integrated` | 插件 + YGOPro2 客户端（不含卡图），不需要另装 YGOPro2 |
 | `external` | 只有插件，对局时使用本机已安装的 YGOPro2 |
 
+v1.5.0 适配 DSH 0.2.x（桌面版默认 profile 为 `desktop`，命令行启动的 Web 版一般为 `web`）。DSH 0.1.x 请安装 [v1.4.0](https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/tag/v1.4.0)。
+
 ```powershell
 # 附带客户端
-dsh plugin --profile web add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.4.0/ygo-tools-for-dsh-1.4.0-integrated.tgz"
+dsh plugin --profile desktop add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.5.0/ygo-tools-for-dsh-1.5.0-integrated.tgz"
 
 # 不带客户端
-dsh plugin --profile web add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.4.0/ygo-tools-for-dsh-1.4.0-external.tgz"
+dsh plugin --profile desktop add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.5.0/ygo-tools-for-dsh-1.5.0-external.tgz"
 ```
 
-安装后在 Web 界面新建会话，选择“游戏王模式”。如果没有出现，重启 DSH 后再新建会话。
+也可以在 DSH 设置的插件页面填入上面的地址安装。安装后新建会话，选择“游戏王模式”；如果没有出现，重启 DSH 后再新建会话。
 
 ## 与 AI 对局
 
-v1.4.0 新增。在 DSH 里让模型载入卡组并开房，YGOPro2 会自动打开并进入房间，点准备即可开始。
+在 DSH 里让模型载入卡组并开房，YGOPro2 会自动打开并进入房间，点准备即可开始。
 
 ```mermaid
 flowchart LR
