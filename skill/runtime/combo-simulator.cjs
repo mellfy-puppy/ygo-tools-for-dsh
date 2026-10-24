@@ -90,6 +90,12 @@ const QUERY_FLAG_SNAPSHOT =
   COMMON.QUERY_POSITION |
   COMMON.QUERY_LINK;
 
+// Field cards also report original ATK/DEF so the state can show current vs printed values.
+const QUERY_FLAG_FIELD_CARDS =
+  QUERY_FLAG_SNAPSHOT |
+  COMMON.QUERY_BASE_ATTACK |
+  COMMON.QUERY_BASE_DEFENSE;
+
 const IDLE_CMD = {
   SUMMON: 0,
   SPSUMMON: 1,
@@ -998,7 +1004,8 @@ function extractCardsFromFieldQueryRaw(raw, length, location = null) {
         cursor += 4;
       }
       if ((flags & COMMON.QUERY_POSITION) !== 0) {
-        card.position = view.getInt32(cursor, true) >>> 0;
+        // QUERY_POSITION packs controller | location<<8 | sequence<<16 | position<<24.
+        card.position = (view.getInt32(cursor, true) >>> 24) & 0xff;
         cursor += 4;
       }
       if ((flags & COMMON.QUERY_ALIAS) !== 0) cursor += 4;
@@ -1010,10 +1017,23 @@ function extractCardsFromFieldQueryRaw(raw, length, location = null) {
       if ((flags & COMMON.QUERY_RANK) !== 0) cursor += 4;
       if ((flags & COMMON.QUERY_ATTRIBUTE) !== 0) cursor += 4;
       if ((flags & COMMON.QUERY_RACE) !== 0) cursor += 4;
-      if ((flags & COMMON.QUERY_ATTACK) !== 0) cursor += 4;
-      if ((flags & COMMON.QUERY_DEFENSE) !== 0) cursor += 4;
-      if ((flags & COMMON.QUERY_BASE_ATTACK) !== 0) cursor += 4;
-      if ((flags & COMMON.QUERY_BASE_DEFENSE) !== 0) cursor += 4;
+      // ATK/DEF are signed: "?" stats are reported as negative values.
+      if ((flags & COMMON.QUERY_ATTACK) !== 0) {
+        card.attack = view.getInt32(cursor, true);
+        cursor += 4;
+      }
+      if ((flags & COMMON.QUERY_DEFENSE) !== 0) {
+        card.defense = view.getInt32(cursor, true);
+        cursor += 4;
+      }
+      if ((flags & COMMON.QUERY_BASE_ATTACK) !== 0) {
+        card.baseAttack = view.getInt32(cursor, true);
+        cursor += 4;
+      }
+      if ((flags & COMMON.QUERY_BASE_DEFENSE) !== 0) {
+        card.baseDefense = view.getInt32(cursor, true);
+        cursor += 4;
+      }
       if ((flags & COMMON.QUERY_REASON) !== 0) cursor += 4;
       if ((flags & COMMON.QUERY_REASON_CARD) !== 0) cursor += 4;
       if ((flags & COMMON.QUERY_EQUIP_CARD) !== 0) cursor += 4;
@@ -1769,8 +1789,16 @@ class CardTextResolver {
     return this.getCard(code).desc;
   }
 
-  getEffectDetails(code, descId) {
+  /**
+   * Map an engine effect description id to the numbered effect on the card text.
+   * @param code - card code that owns the effect.
+   * @param descId - engine description id (normally cardId * 16 + stringIndex).
+   * @param context - optional `{ location }` of the card when the effect is offered;
+   *   used to reject numbered effects whose text names a different activation zone.
+   */
+  getEffectDetails(code, descId, context = {}) {
     const card = this.getCard(code);
+    const zone = engineLocationZone(context?.location);
     const id = Number(descId);
     if (!Number.isFinite(id) || id === 0) {
       return {
@@ -1788,40 +1816,63 @@ class CardTextResolver {
     const candidates = [];
     const auxBase = (card.id * 16) >>> 0;
     const auxOffset = unsignedId - auxBase;
-    if (auxOffset >= 0 && auxOffset < 16) candidates.push(auxOffset);
+    const ownString = auxOffset >= 0 && auxOffset < 16;
+    if (ownString) {
+      // The standard aux.Stringid(card, n) id is exact; bridge guesses below would only add noise.
+      candidates.push(auxOffset);
+    } else {
+      // Some bridges expose the compact Stringid index instead of cardId * 16 + n.
+      const lowNibble = unsignedId & 0xf;
+      if (lowNibble >= 0 && lowNibble < 16) candidates.push(lowNibble);
+      const lowByte = unsignedId & 0xff;
+      if (lowByte >= 1 && lowByte <= 16) candidates.push(lowByte - 1);
+      const shifted = unsignedId >>> 4;
+      if (shifted >= 0 && shifted < 16) candidates.push(shifted);
+    }
 
-    // Some bridges expose the compact Stringid index instead of cardId * 16 + n.
-    const lowNibble = unsignedId & 0xf;
-    if (lowNibble >= 0 && lowNibble < 16) candidates.push(lowNibble);
-    const lowByte = unsignedId & 0xff;
-    if (lowByte >= 1 && lowByte <= 16) candidates.push(lowByte - 1);
-    const shifted = unsignedId >>> 4;
-    if (shifted >= 0 && shifted < 16) candidates.push(shifted);
-
+    const fits = (effect) => effectFitsZone(effect, zone);
     for (const stringIndex of uniq(candidates)) {
       const stringText = card.stringsByIndex[stringIndex] ?? '';
       const matches = stringText
         ? card.numberedEffects.filter((effect) => textMatchesEffect(stringText, effect.text))
         : [];
-      if (matches.length === 1) {
-        const match = matches[0];
-        return this.makeEffectDetails(card, unsignedId, stringIndex, match, 'text-match');
+      // A short string like "特殊召唤" can match several effects; the card's zone breaks the tie.
+      const fittingMatches = matches.filter(fits);
+      if (fittingMatches.length === 1) {
+        return this.makeEffectDetails(card, unsignedId, stringIndex, fittingMatches[0], 'text-match');
       }
+      // Scripts sometimes reuse one Stringid for effects in different zones; prefer the zone's own effect.
+      const stringContradicted = matches.length > 0 && fittingMatches.length === 0;
+      // Ordinal guesses: Stringid order usually follows activatable effects, sometimes all numbered effects.
+      const byActivation = card.numberedEffects
+        .filter((effect) => isActivatableNumberedEffect(effect.text))[stringIndex];
+      if (byActivation && fits(byActivation)) {
+        return this.makeEffectDetails(card, unsignedId, stringIndex, byActivation, 'activation-order');
+      }
+      if (stringContradicted) {
+        const fitting = card.numberedEffects.filter(fits);
+        const zoneOwn = uniqueZoneEffect(card.numberedEffects, zone) ?? (fitting.length === 1 ? fitting[0] : null);
+        if (zoneOwn) return this.makeEffectDetails(card, unsignedId, stringIndex, zoneOwn, 'location-unique');
+      }
+      // A prompt/option string is more trustworthy than a positional guess.
       if (stringText) {
-        const activationMatch = card.numberedEffects
-          .filter((effect) => isActivatableNumberedEffect(effect.text))[stringIndex];
-        if (activationMatch) {
-          return this.makeEffectDetails(card, unsignedId, stringIndex, activationMatch, 'activation-order');
-        }
         return this.makeEffectDetails(card, unsignedId, stringIndex, null, 'engine-string');
       }
-      const activationMatch = card.numberedEffects
-        .filter((effect) => isActivatableNumberedEffect(effect.text))[stringIndex];
-      if (activationMatch) {
-        return this.makeEffectDetails(card, unsignedId, stringIndex, activationMatch, 'activation-order');
+      const byPosition = zone ? card.numberedEffects[stringIndex] : undefined;
+      if (byPosition && fits(byPosition)) {
+        return this.makeEffectDetails(card, unsignedId, stringIndex, byPosition, 'location-order');
       }
-      if (card.numberedEffects.length === 1) {
+      const uniqueFit = zone ? uniqueZoneEffect(card.numberedEffects, zone) : null;
+      if (uniqueFit) {
+        return this.makeEffectDetails(card, unsignedId, stringIndex, uniqueFit, 'location-unique');
+      }
+      if (card.numberedEffects.length === 1 && fits(card.numberedEffects[0])) {
         return this.makeEffectDetails(card, unsignedId, stringIndex, card.numberedEffects[0], 'single-effect');
+      }
+      // No engine string to go on: if only one numbered effect can be used from this zone, it is that one.
+      const fitting = zone ? card.numberedEffects.filter(fits) : [];
+      if (fitting.length === 1) {
+        return this.makeEffectDetails(card, unsignedId, stringIndex, fitting[0], 'location-only-fit');
       }
     }
 
@@ -1836,7 +1887,9 @@ class CardTextResolver {
       ? `卡面${match.scope ? `${match.scope}` : '效果'}${marker}`
       : stringIndex === null
         ? `引擎效果ID=${descriptionId}`
-        : `引擎效果#${stringIndex + 1} (Stringid=${card.id}:${stringIndex})`;
+        : card.stringsByIndex[stringIndex]
+          ? `引擎提示「${card.stringsByIndex[stringIndex]}」(Stringid=${card.id}:${stringIndex})`
+          : `引擎效果#${stringIndex + 1} (Stringid=${card.id}:${stringIndex})`;
     return {
       descriptionId,
       stringIndex,
@@ -1868,11 +1921,10 @@ class CardTextResolver {
         scope: findEffectScope(description, match.index),
       });
     }
-    return starts.map((effect, position) => ({
-      ...effect,
-      ordinal: position + 1,
-      text: description.slice(effect.start, starts[position + 1]?.start ?? description.length).trim(),
-    }));
+    return starts.map((effect, position) => {
+      const text = description.slice(effect.start, starts[position + 1]?.start ?? description.length).trim();
+      return { ...effect, ordinal: position + 1, text, zones: effectZoneHints(text) };
+    });
   }
 
   getNumberedEffectFromDescription(description, index) {
@@ -1896,6 +1948,65 @@ function textMatchesEffect(stringText, effectText) {
 
 function isActivatableNumberedEffect(effectText) {
   return /(?:发动|才能|可以|场合|时|阶段|宣言|之际)/.test(String(effectText ?? ''));
+}
+
+const ZONE_WORDS = [
+  ['grave', /墓地/],
+  ['banished', /除外/],
+  ['hand', /手卡/],
+  ['field', /场上|怪兽区域|魔法与陷阱区域|魔法·陷阱区域|场地区域|灵摆区域/],
+];
+
+/**
+ * Zones this numbered effect explicitly says "this card" activates from. Empty when unspecified.
+ * Only phrases about the card's own location count; costs or targets elsewhere do not.
+ * @param {string} effectText
+ * @returns {string[]}
+ */
+function effectZoneHints(effectText) {
+  const text = String(effectText ?? '');
+  const zones = new Set();
+  // 这张卡在手卡·墓地存在的场合 / 这张卡在场上表侧表示存在 / 这张卡在墓地的状态
+  for (const m of text.matchAll(/这张卡(?:已)?在([^，。,；;]{1,12}?)(?:表侧表示)?(?:存在|的状态)/g)) {
+    for (const [zone, pattern] of ZONE_WORDS) if (pattern.test(m[1])) zones.add(zone);
+  }
+  // Triggers: 这张卡被战斗破坏送去墓地 / 这张卡从场上送去墓地的场合. Costs like 把这张卡送去墓地才能发动 do not count.
+  if (/这张卡被[^，。,]{0,8}送去墓地|这张卡(?:从[^，。,]{1,8})?送去墓地的(?:场合|时)/.test(text)) zones.add('grave');
+  // 这张卡被除外 / 除外的这张卡特殊召唤 (activates while banished)
+  if (/这张卡被[^，。,]{0,6}除外|(?<!被)除外的这张卡/.test(text)) zones.add('banished');
+  // 把这张卡从手卡丢弃 / 这张卡从手卡·墓地特殊召唤
+  for (const m of text.matchAll(/这张卡从((?:手卡|墓地|除外状态|场上)(?:·(?:手卡|墓地|除外状态|场上))*)/g)) {
+    for (const [zone, pattern] of ZONE_WORDS) if (pattern.test(m[1])) zones.add(zone);
+  }
+  // 手卡·场上的这张卡 / 墓地的这张卡 / 除外状态的这张卡
+  for (const m of text.matchAll(/((?:手卡|场上|墓地|除外状态)(?:·(?:手卡|场上|墓地|除外状态))*)的这张卡/g)) {
+    for (const [zone, pattern] of ZONE_WORDS) if (pattern.test(m[1])) zones.add(zone);
+  }
+  return [...zones];
+}
+
+/** Engine LOCATION_* bitmask to the coarse zone classes used by effectZoneHints. */
+function engineLocationZone(location) {
+  const loc = Number(location);
+  if (!Number.isFinite(loc) || loc <= 0) return null;
+  if (loc & 0x02) return 'hand';
+  if (loc & 0x10) return 'grave';
+  if (loc & 0x20) return 'banished';
+  if (loc & (0x04 | 0x08 | 0x100 | 0x200)) return 'field';
+  return null;
+}
+
+/** True unless the effect text explicitly names other zones than the one the card is in. */
+function effectFitsZone(effect, zone) {
+  if (!zone || !effect) return true;
+  const zones = effect.zones ?? effectZoneHints(effect.text);
+  return zones.length === 0 || zones.includes(zone);
+}
+
+/** The single numbered effect whose text explicitly names `zone`, or null. */
+function uniqueZoneEffect(effects, zone) {
+  const named = effects.filter((effect) => (effect.zones ?? effectZoneHints(effect.text)).includes(zone));
+  return named.length === 1 ? named[0] : null;
 }
 
 function findEffectScope(description, position) {
@@ -3776,15 +3887,16 @@ class DuelRunner {
       }
     };
     const cardName = (code) => this.cardText.getName(code);
-    const effectDetails = (code, desc) => this.cardText.getEffectDetails(code, desc);
-    const effectLabel = (code, desc) => {
-      const details = effectDetails(code, desc);
+    // `location` is the card's current LOCATION_* so the mapping can reject effects from other zones.
+    const effectDetails = (code, desc, location) => this.cardText.getEffectDetails(code, desc, { location });
+    const effectLabel = (code, desc, location) => {
+      const details = effectDetails(code, desc, location);
       return details.effectNumber !== null
         ? `（${details.reference}）`
         : `（${details.reference}，不要按序号猜测）`;
     };
-    const effectText = (code, desc) => {
-      const details = effectDetails(code, desc);
+    const effectText = (code, desc, location) => {
+      const details = effectDetails(code, desc, location);
       const cardDescription = this.cardText.getDescription(code);
       const mapped = details.text
         ? `对应文本：${details.text}`
@@ -3839,10 +3951,10 @@ class DuelRunner {
       }
       for (const card of msg.activatableCards ?? []) {
         add(this.makeAction({
-          label: `${formatCardChoiceLabel('发动效果', cardName(card.code), card)}${effectLabel(card.code, card.desc)}`,
+          label: `${formatCardChoiceLabel('发动效果', cardName(card.code), card)}${effectLabel(card.code, card.desc, card.location)}`,
           kind: 'activate',
           response: msg.prepareResponse(IDLE_CMD.ACTIVATE, card),
-          text: effectText(card.code, card.desc),
+          text: effectText(card.code, card.desc, card.location),
         }));
       }
       if (msg.canBp) {
@@ -3854,10 +3966,10 @@ class DuelRunner {
     } else if (this.isMsgType(msg, 'SelectBattle')) {
       for (const card of msg.activatableCards ?? []) {
         add(this.makeAction({
-          label: `${formatCardChoiceLabel('战阶发动', cardName(card.code), card)}${effectLabel(card.code, card.desc)}`,
+          label: `${formatCardChoiceLabel('战阶发动', cardName(card.code), card)}${effectLabel(card.code, card.desc, card.location)}`,
           kind: 'activate',
           response: msg.prepareResponse(BATTLE_CMD.ACTIVATE, card),
-          text: effectText(card.code, card.desc),
+          text: effectText(card.code, card.desc, card.location),
         }));
       }
       for (const card of msg.attackableCards ?? []) {
@@ -3877,17 +3989,17 @@ class DuelRunner {
     } else if (this.isMsgType(msg, 'SelectChain')) {
       for (const chain of msg.chains ?? []) {
         add(this.makeAction({
-          label: `${formatCardChoiceLabel('连锁发动', cardName(chain.code), chain)}${effectLabel(chain.code, chain.desc)}`,
+          label: `${formatCardChoiceLabel('连锁发动', cardName(chain.code), chain)}${effectLabel(chain.code, chain.desc, chain.location)}`,
           kind: 'chain',
           response: msg.prepareResponse(chain),
-          text: effectText(chain.code, chain.desc),
+          text: effectText(chain.code, chain.desc, chain.location),
         }));
       }
       const def = msg.defaultResponse?.();
       if (def) add(this.makeAction({ label: '不连锁', kind: 'other', response: def, text: '' }));
     } else if (this.isMsgType(msg, 'SelectEffectYn')) {
-      const text = effectText(msg.code, msg.desc);
-      add(this.makeAction({ label: `发动[${cardName(msg.code)}]${effectLabel(msg.code, msg.desc)}`, kind: 'activate', response: msg.prepareResponse(true), text }));
+      const text = effectText(msg.code, msg.desc, msg.location);
+      add(this.makeAction({ label: `发动[${cardName(msg.code)}]${effectLabel(msg.code, msg.desc, msg.location)}`, kind: 'activate', response: msg.prepareResponse(true), text }));
       add(this.makeAction({ label: `不发动[${cardName(msg.code)}]`, kind: 'other', response: msg.prepareResponse(false), text: '' }));
     } else if (this.isMsgType(msg, 'SelectYesNo')) {
       add(this.makeAction({ label: '选择[是]', kind: 'yes', response: msg.prepareResponse(true), text: '' }));
@@ -4216,7 +4328,7 @@ class DuelRunner {
     const startedAt = startProfileTimer();
     try {
       const out = this.duel.queryFieldCard(
-        { player, location, queryFlag: QUERY_FLAG_SNAPSHOT },
+        { player, location, queryFlag: QUERY_FLAG_FIELD_CARDS },
         { noParse: true },
       );
       return extractCardsFromFieldQueryRaw(out.raw, out.length, location)

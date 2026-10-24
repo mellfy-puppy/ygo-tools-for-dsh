@@ -30,7 +30,8 @@ const LINK_TARGETS_BY_SEQUENCE = new Map([
 ]);
 
 /** @typedef {{ player: number | null, opponent: number | null }} LifePoints */
-/** @typedef {{ hand: string[], handCount: number, handHidden: boolean, deckCount: number, monsters: string[], spellsTraps: string[], graveyard: string[], graveyardCount: number, graveyardTruncated: boolean, banished: string[], extraDeck: string[], extraDeckCount: number }} PlayerStateSummary */
+/** @typedef {{ zone: string, name: string, code: number | null, position: string | null, faceUp: boolean | null, attack: number | null, defense: number | null, baseAttack: number | null, baseDefense: number | null, summary: string }} MonsterDetail */
+/** @typedef {{ hand: string[], handCount: number, handHidden: boolean, deckCount: number, monsters: string[], monsterDetails: MonsterDetail[], spellsTraps: string[], graveyard: string[], graveyardCount: number, graveyardTruncated: boolean, banished: string[], extraDeck: string[], extraDeckCount: number }} PlayerStateSummary */
 /** @typedef {{ player: 'P0' | 'P1', name: string, code: number | null, zone: string, sequence: number | null, linkMarker: number, arrows: string[], pointedZones: string[] }} LinkMonsterSummary */
 /** @typedef {{ currentLinkZones: string[], linkMonsters: LinkMonsterSummary[], summary: string }} FieldContextSummary */
 /** @typedef {{ lp: LifePoints, player: PlayerStateSummary, opponent: PlayerStateSummary, fieldContext: FieldContextSummary, phase: string | null, turn: number | null, decision: string | null, terminal: boolean }} CurrentStateSummary */
@@ -221,6 +222,8 @@ function buildPlayerState(snapshot, playerKey, resolveCardName, graveyardLimit) 
     handHidden,
     deckCount: deckCards.length,
     monsters: namesForZone(readZone(snapshot, playerKey, 'mzone'), resolveCardName),
+    monsterDetails: readZone(snapshot, playerKey, 'mzone')
+      .map((card, index) => buildMonsterDetail(card, index, playerKey, resolveCardName)),
     spellsTraps: namesForZone(readZone(snapshot, playerKey, 'szone'), resolveCardName),
     graveyard,
     graveyardCount: graveyardCards.length,
@@ -300,6 +303,66 @@ function buildLinkMonsterSummary(card, fallbackSequence, playerKey, resolveCardN
     linkMarker,
     arrows,
     pointedZones,
+  };
+}
+
+const POS_FACEUP_ATTACK = 0x1;
+const POS_FACEDOWN_ATTACK = 0x2;
+const POS_FACEUP_DEFENSE = 0x4;
+const POS_FACEDOWN_DEFENSE = 0x8;
+
+/**
+ * Current position and ATK/DEF of a monster on the field, as reported by the engine.
+ * Stats are omitted when the backend does not supply them, and for the opponent's
+ * face-down monsters, which a player could not see.
+ * @param {unknown} card
+ * @param {number} fallbackSequence
+ * @param {'p0' | 'p1'} playerKey
+ * @param {(card: unknown) => string} resolveCardName
+ * @returns {MonsterDetail}
+ */
+function buildMonsterDetail(card, fallbackSequence, playerKey, resolveCardName) {
+  const record = asRecord(card);
+  const name = resolveCardName(card);
+  const zone = monsterZoneLabel(playerKey, readCardSequence(card) ?? fallbackSequence);
+  const positionBits = readNumber(record.position);
+  const faceUp = positionBits === null ? null : (positionBits & (POS_FACEUP_ATTACK | POS_FACEUP_DEFENSE)) !== 0;
+  const position = positionBits === null ? null
+    : positionBits & POS_FACEUP_ATTACK ? '表侧攻击表示'
+      : positionBits & POS_FACEUP_DEFENSE ? '表侧守备表示'
+        : positionBits & POS_FACEDOWN_DEFENSE ? '里侧守备表示'
+          : positionBits & POS_FACEDOWN_ATTACK ? '里侧攻击表示' : null;
+  const hidden = playerKey === 'p1' && faceUp === false;
+  const isLink = (readCardType(card) & TYPE_LINK) !== 0;
+  const stat = (value) => (hidden ? null : readNumber(value));
+  const attack = stat(record.attack);
+  const baseAttack = stat(record.baseAttack);
+  // Link monsters have no DEF.
+  const defense = isLink ? null : stat(record.defense);
+  const baseDefense = isLink ? null : stat(record.baseDefense);
+
+  const formatStat = (label, current, base) => {
+    if (current === null) return null;
+    const shown = current < 0 ? '?' : String(current);
+    return base !== null && base !== current ? `${label}${shown}（原本${base < 0 ? '?' : base}）` : `${label}${shown}`;
+  };
+  const parts = [`${zone} ${name}`];
+  if (position) parts.push(position);
+  const stats = [formatStat('攻', attack, baseAttack), formatStat('守', defense, baseDefense)].filter(Boolean);
+  if (stats.length > 0) parts.push(stats.join(' / '));
+  else if (hidden) parts.push('攻守不可见');
+
+  return {
+    zone,
+    name,
+    code: readCardCode(card),
+    position,
+    faceUp,
+    attack,
+    defense,
+    baseAttack,
+    baseDefense,
+    summary: parts.join(' '),
   };
 }
 

@@ -22,14 +22,14 @@ Release 提供两个安装包，插件代码相同：
 | `integrated` | 插件 + YGOPro2 客户端（不含卡图），不需要另装 YGOPro2 |
 | `external` | 只有插件，对局时使用本机已安装的 YGOPro2 |
 
-v1.5.0 适配 DSH 0.2.x（桌面版默认 profile 为 `desktop`，命令行启动的 Web 版一般为 `web`）。DSH 0.1.x 请安装 [v1.4.0](https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/tag/v1.4.0)。
+v1.5.x 适配 DSH 0.2.x（桌面版默认 profile 为 `desktop`，命令行启动的 Web 版一般为 `web`）。DSH 0.1.x 请安装 [v1.4.0](https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/tag/v1.4.0)。
 
 ```powershell
 # 附带客户端
-dsh plugin --profile desktop add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.5.0/ygo-tools-for-dsh-1.5.0-integrated.tgz"
+dsh plugin --profile desktop add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.5.1/ygo-tools-for-dsh-1.5.1-integrated.tgz"
 
 # 不带客户端
-dsh plugin --profile desktop add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.5.0/ygo-tools-for-dsh-1.5.0-external.tgz"
+dsh plugin --profile desktop add "https://github.com/mellfy-puppy/ygo-tools-for-dsh/releases/download/v1.5.1/ygo-tools-for-dsh-1.5.1-external.tgz"
 ```
 
 也可以在 DSH 设置的插件页面填入上面的地址安装。安装后新建会话，选择“游戏王模式”；如果没有出现，重启 DSH 后再新建会话。
